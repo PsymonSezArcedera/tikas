@@ -10,8 +10,10 @@ datasource db {
   provider = "postgresql"
 }
 
-// Only the User model is defined for now (Phase 1 — Foundation).
-// The remaining models from SPEC.md are added in later phases.
+// Schema mirrors SPEC.md. Conventions: measurements stored in metric (kg, cm),
+// converted at display time from User.unitPreference. Editable entities carry
+// updatedAt — the log tables (FoodLog, WeightLog, BodyMeasurement) too, since
+// entries get corrected in practice. ChatMessage stays append-only.
 
 enum UnitPreference {
   METRIC
@@ -32,6 +34,24 @@ enum ActivityLevel {
   VERY_ACTIVE
 }
 
+enum MealType {
+  BREAKFAST
+  LUNCH
+  DINNER
+  SNACK
+}
+
+enum CoachType {
+  FORTIS // strength
+  VITA // nutrition
+  LUX // wellness
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+}
+
 model User {
   id             String         @id @default(cuid())
   name           String?
@@ -46,4 +66,130 @@ model User {
   unitPreference UnitPreference @default(METRIC)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
+
+  workoutPlans     WorkoutPlan[]
+  foodLogs         FoodLog[]
+  weightLogs       WeightLog[]
+  bodyMeasurements BodyMeasurement[]
+  dailyActivities  DailyActivity[]
+  chatSessions     ChatSession[]
+}
+
+model WorkoutPlan {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  goal      String
+  intensity String
+  days      Int // number of training days in the plan
+  duration  Int // target session length in minutes
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exercises Exercise[]
+
+  @@index([userId])
+}
+
+model Exercise {
+  id        String   @id @default(cuid())
+  planId    String
+  day       String // e.g. "Day 1" / "Monday"
+  exercise  String
+  sets      Int
+  reps      String // string to allow ranges like "8-12" or "AMRAP"
+  rest      String // e.g. "60s", "90s"
+  notes     String?
+  updatedAt DateTime @updatedAt
+
+  plan WorkoutPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([planId])
+}
+
+model FoodLog {
+  id          String   @id @default(cuid())
+  userId      String
+  mealType    MealType
+  foodName    String
+  quantity    Float // amount consumed (number of servings)
+  servingSize Float // grams/ml per serving
+  servingUnit String // g | ml | piece | cup | ...
+  calories    Float
+  protein     Float // grams
+  carbs       Float // grams
+  fat         Float // grams
+  date        DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+}
+
+model WeightLog {
+  id        String   @id @default(cuid())
+  userId    String
+  weight    Float // kg
+  bodyFat   Float? // percentage
+  date      DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+}
+
+model BodyMeasurement {
+  id        String   @id @default(cuid())
+  userId    String
+  waist     Float? // cm
+  chest     Float? // cm
+  leftArm   Float? // cm
+  rightArm  Float? // cm
+  date      DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+}
+
+model DailyActivity {
+  id           String   @id @default(cuid())
+  userId       String
+  date         DateTime @db.Date
+  loggedFood   Boolean  @default(false)
+  loggedWeight Boolean  @default(false)
+  workedOut    Boolean  @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date]) // one row per user per day — streaks read from here
+}
+
+model ChatSession {
+  id        String    @id @default(cuid())
+  userId    String
+  coachType CoachType
+  title     String
+  createdAt DateTime  @default(now())
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@index([userId])
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  sessionId String
+  role      MessageRole
+  message   String
+  timestamp DateTime    @default(now())
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
 }

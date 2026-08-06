@@ -54,9 +54,11 @@ enum MessageRole {
 
 model User {
   id             String         @id @default(cuid())
-  name           String?
+  name           String? // Better Auth always sets this on sign-up
   email          String         @unique
-  passwordHash   String? // null for OAuth-only (Google) accounts
+  emailVerified  Boolean        @default(false) // Better Auth
+  image          String? // Better Auth (avatar URL, e.g. from Google)
+  passwordHash   String? // unused by Better Auth — credential password lives in Account.password
   height         Float? // cm — stored in metric, converted at display time
   weight         Float? // kg
   goalWeight     Float? // kg
@@ -73,6 +75,8 @@ model User {
   bodyMeasurements BodyMeasurement[]
   dailyActivities  DailyActivity[]
   chatSessions     ChatSession[]
+  sessions         Session[]
+  accounts         Account[]
 }
 
 model WorkoutPlan {
@@ -192,4 +196,55 @@ model ChatMessage {
   session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId])
+}
+
+// --- Better Auth (email/password + Google OAuth) ---
+// Field names/types follow Better Auth's core schema; ids use cuid() and userId
+// FKs cascade, matching our conventions. Hashed credential passwords live in
+// Account.password (provider "credential"), not on User.
+
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  ipAddress String?
+  userAgent String?
+  userId    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String? // hashed password for the credential provider
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
 }

@@ -1,0 +1,49 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Only the User model is defined for now (Phase 1 — Foundation).
+// The remaining models from SPEC.md are added in later phases.
+
+enum UnitPreference {
+  METRIC
+  IMPERIAL
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum ActivityLevel {
+  SEDENTARY
+  LIGHT
+  MODERATE
+  ACTIVE
+  VERY_ACTIVE
+}
+
+model User {
+  id             String         @id @default(cuid())
+  name           String?
+  email          String         @unique
+  passwordHash   String? // null for OAuth-only (Google) accounts
+  height         Float? // cm — stored in metric, converted at display time
+  weight         Float? // kg
+  goalWeight     Float? // kg
+  birthday       DateTime?
+  gender         Gender?
+  activityLevel  ActivityLevel?
+  unitPreference UnitPreference @default(METRIC)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+}

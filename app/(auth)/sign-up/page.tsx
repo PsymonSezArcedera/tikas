@@ -5,9 +5,18 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { authClient } from "@/lib/auth-client";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { GoogleButton } from "../google-button";
 
-// Minimal, intentionally-unstyled form for testing sign-up + Google login
-// end to end. Real styled auth pages come later.
 export default function SignUpPage() {
   const router = useRouter();
   const [name, setName] = useState("");
@@ -29,49 +38,80 @@ export default function SignUpPage() {
     router.push("/dashboard");
   }
 
-  async function handleGoogle() {
-    await authClient.signIn.social({
-      provider: "google",
-      callbackURL: "/dashboard",
-    });
-  }
-
   return (
-    <main style={{ maxWidth: 320, margin: "4rem auto", display: "grid", gap: 12 }}>
-      <h1>Sign up</h1>
-      <form onSubmit={handleSubmit} style={{ display: "grid", gap: 8 }}>
-        <input
-          placeholder="Name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          required
-        />
-        <input
-          type="email"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
-        <input
-          type="password"
-          placeholder="Password (min 8 characters)"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-          minLength={8}
-        />
-        <button type="submit" disabled={loading}>
-          {loading ? "Creating account…" : "Create account"}
-        </button>
-      </form>
-      <button type="button" onClick={handleGoogle}>
-        Continue with Google
-      </button>
-      {error && <p style={{ color: "crimson" }}>{error}</p>}
-      <p>
-        Already have an account? <Link href="/sign-in">Sign in</Link>
-      </p>
-    </main>
+    <Card className="gap-0">
+      <CardHeader className="pb-2 text-center">
+        <CardTitle className="text-2xl">Create your account</CardTitle>
+        <CardDescription>Start tracking with Tikas today.</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4 pt-6">
+        <GoogleButton />
+
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span className="h-px flex-1 bg-border" />
+          or
+          <span className="h-px flex-1 bg-border" />
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="name">Name</Label>
+            <Input
+              id="name"
+              autoComplete="name"
+              placeholder="Your name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="email">Email</Label>
+            <Input
+              id="email"
+              type="email"
+              autoComplete="email"
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="password">Password</Label>
+            <Input
+              id="password"
+              type="password"
+              autoComplete="new-password"
+              placeholder="At least 8 characters"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              minLength={8}
+            />
+          </div>
+
+          {error && (
+            <p className="text-sm text-destructive" role="alert">
+              {error}
+            </p>
+          )}
+
+          <Button type="submit" size="lg" disabled={loading} className="mt-1 h-11">
+            {loading ? "Creating account…" : "Create account"}
+          </Button>
+        </form>
+
+        <p className="text-center text-sm text-muted-foreground">
+          Already have an account?{" "}
+          <Link
+            href="/sign-in"
+            className="font-medium text-foreground underline-offset-4 hover:underline"
+          >
+            Sign in
+          </Link>
+        </p>
+      </CardContent>
+    </Card>
   );
 }

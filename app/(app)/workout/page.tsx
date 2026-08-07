@@ -1,17 +1,22 @@
 import type { Metadata } from "next";
-import { Dumbbell } from "lucide-react";
+import { redirect } from "next/navigation";
 
-import { PagePlaceholder } from "@/components/page-placeholder";
+import { getSession } from "@/lib/session";
+import { getLatestPlan } from "./actions";
+import { WorkoutClient } from "./workout-client";
 
 export const metadata: Metadata = { title: "Workout" };
 
-export default function WorkoutPage() {
-  return (
-    <PagePlaceholder
-      title="Workout"
-      description="Generate and manage training plans with Fortis, your strength coach."
-      icon={Dumbbell}
-      cards={["Active plan", "Today's session", "Generate a plan"]}
-    />
-  );
+// Generation calls Gemini, which can take several seconds — give the action room.
+export const maxDuration = 60;
+
+export default async function WorkoutPage() {
+  const session = await getSession();
+  if (!session) {
+    redirect("/sign-in");
+  }
+
+  const initialPlan = await getLatestPlan();
+
+  return <WorkoutClient initialPlan={initialPlan} />;
 }

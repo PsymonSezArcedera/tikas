@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   Dumbbell,
   LayoutDashboard,
+  LineChart,
   LogOut,
   Menu,
   Salad,
@@ -29,6 +30,7 @@ type NavItem = {
 
 const NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, hint: "Overview" },
+  { href: "/tracking", label: "Tracking", icon: LineChart, hint: "Progress" },
   { href: "/workout", label: "Workout", icon: Dumbbell, hint: "Fortis" },
   { href: "/nutrition", label: "Nutrition", icon: Salad, hint: "Vita" },
   { href: "/wellness", label: "Wellness", icon: Sparkles, hint: "Lux" },

@@ -20,6 +20,7 @@ export const config = {
   matcher: [
     "/onboarding/:path*",
     "/dashboard/:path*",
+    "/tracking/:path*",
     "/workout/:path*",
     "/nutrition/:path*",
     "/wellness/:path*",

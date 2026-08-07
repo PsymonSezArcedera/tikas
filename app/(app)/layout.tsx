@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { isProfileComplete } from "@/lib/profile";
 import { AppShell } from "@/components/app-shell";
+import { Providers } from "@/app/providers";
 
 // Shared chrome for every authenticated section (dashboard, workout, nutrition,
 // wellness). The proxy gives an optimistic cookie check; this server-side
@@ -34,14 +35,16 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
   }
 
   return (
-    <AppShell
-      user={{
-        name: session.user.name,
-        email: session.user.email,
-        image: session.user.image,
-      }}
-    >
-      {children}
-    </AppShell>
+    <Providers>
+      <AppShell
+        user={{
+          name: session.user.name,
+          email: session.user.email,
+          image: session.user.image,
+        }}
+      >
+        {children}
+      </AppShell>
+    </Providers>
   );
 }

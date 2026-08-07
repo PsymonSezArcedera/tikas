@@ -22,7 +22,9 @@ export function PagePlaceholder({
           <Icon className="size-5" />
         </span>
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+          <h1 className="font-display text-2xl font-semibold tracking-tight">
+            {title}
+          </h1>
           <p className="mt-1 text-sm text-muted-foreground">{description}</p>
         </div>
       </header>
@@ -31,7 +33,7 @@ export function PagePlaceholder({
         {cards.map((label) => (
           <Card
             key={label}
-            className="min-h-40 items-start justify-between p-5"
+            className="min-h-40 items-start justify-between p-5 transition-shadow duration-200 hover:shadow-[var(--card-shadow-hover)]"
           >
             <span className="text-sm font-medium text-muted-foreground">
               {label}

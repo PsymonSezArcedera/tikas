@@ -38,7 +38,9 @@ export function Brand({
     <span className={cn("inline-flex items-center gap-2.5", className)}>
       <BrandMark />
       {showWordmark ? (
-        <span className="text-lg font-semibold tracking-tight">Tikas</span>
+        <span className="font-display text-lg font-semibold tracking-tight">
+          Tikas
+        </span>
       ) : null}
     </span>
   );

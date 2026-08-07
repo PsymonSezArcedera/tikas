@@ -112,7 +112,7 @@ function SidebarContent({
   onNavigate?: () => void;
 }) {
   return (
-    <div className="flex h-full w-full flex-col gap-2 p-3">
+    <div className="flex h-full w-full flex-col gap-2 overflow-y-auto p-3">
       <div className="flex items-center justify-between px-2 py-3">
         <Link href="/dashboard" className="transition-opacity hover:opacity-80">
           <Brand />
@@ -157,7 +157,7 @@ function SidebarContent({
                 )}
               />
               <span className="flex-1">{item.label}</span>
-              <span className="text-[0.7rem] text-muted-foreground/70">
+              <span className="text-[0.65rem] font-medium uppercase tracking-wider text-muted-foreground/70">
                 {item.hint}
               </span>
             </Link>
@@ -184,7 +184,7 @@ function UserFooter({ user }: { user: ShellUser }) {
   }
 
   return (
-    <div className="mt-auto flex flex-col gap-2 border-t border-sidebar-border pt-3">
+    <div className="mt-auto flex shrink-0 flex-col gap-2 border-t border-sidebar-border pt-3 pb-1">
       <div className="flex items-center gap-3 px-2">
         <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-sm font-semibold text-primary">
           {initial}

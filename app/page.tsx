@@ -7,13 +7,8 @@ import { buttonVariants } from "@/components/ui/button";
 
 export default function Home() {
   return (
-    <div className="relative flex min-h-svh flex-col overflow-hidden">
-      {/* Ember glow — the single brand accent. */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -top-40 left-1/2 h-[40rem] w-[40rem] -translate-x-1/2 rounded-full bg-primary/15 blur-[130px]"
-      />
-
+    <div className="flex min-h-svh flex-col">
+      {/* The amber corner glow + grain come from the global atmosphere. */}
       <header className="relative flex items-center justify-between px-5 py-5 sm:px-8">
         <Brand />
         <div className="flex items-center gap-2">
@@ -29,7 +24,7 @@ export default function Home() {
           <span className="size-1.5 rounded-full bg-primary" />
           AI-powered fitness companion
         </span>
-        <h1 className="max-w-2xl text-balance text-4xl font-semibold tracking-tight sm:text-5xl">
+        <h1 className="max-w-2xl text-balance font-display text-4xl font-semibold tracking-tight sm:text-5xl">
           Build strength you can see.
         </h1>
         <p className="mt-4 max-w-md text-balance text-muted-foreground">

@@ -1,17 +1,21 @@
 import type { Metadata } from "next";
-import { Salad } from "lucide-react";
+import { redirect } from "next/navigation";
 
-import { PagePlaceholder } from "@/components/page-placeholder";
+import { getSession } from "@/lib/session";
+import { getTodayFoodLogs } from "./actions";
+import { NutritionClient } from "./nutrition-client";
 
 export const metadata: Metadata = { title: "Nutrition" };
 
-export default function NutritionPage() {
-  return (
-    <PagePlaceholder
-      title="Nutrition"
-      description="Log meals and track calories and macros with Vita, your nutrition coach."
-      icon={Salad}
-      cards={["Today's intake", "Log food", "Macro breakdown"]}
-    />
-  );
+export default async function NutritionPage() {
+  const session = await getSession();
+  if (!session) {
+    redirect("/sign-in");
+  }
+
+  // Fetched on the server for a no-flash first paint; TanStack Query takes over
+  // on the client (optimistic inserts, refetch after each mutation).
+  const initialLogs = await getTodayFoodLogs();
+
+  return <NutritionClient initialLogs={initialLogs} />;
 }

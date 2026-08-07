@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { markDailyActivity } from "@/lib/daily-activity";
 import { displayToCm, displayToKg, type Unit } from "@/lib/units";
 import { bodyMeasurementSchema, weightLogSchema } from "@/lib/validations";
 
@@ -50,12 +51,6 @@ async function requireUser() {
   });
   if (!user) throw new Error("Not authenticated");
   return user;
-}
-
-// Streaks read from DailyActivity, so mark the entry's day as "logged weight".
-// We normalise to a UTC day to match the @db.Date column and the unique key.
-function startOfUtcDay(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
 const firstIssue = (e: { issues: { message: string }[] }) =>
@@ -124,13 +119,8 @@ export async function createWeightLog(
     },
   });
 
-  // Flip today's (the entry's day's) streak flag.
-  const activityDate = startOfUtcDay(date);
-  await prisma.dailyActivity.upsert({
-    where: { userId_date: { userId: user.id, date: activityDate } },
-    create: { userId: user.id, date: activityDate, loggedWeight: true },
-    update: { loggedWeight: true },
-  });
+  // Flip the entry's day's streak flag.
+  await markDailyActivity(user.id, date, { loggedWeight: true });
 
   return {
     ok: true,

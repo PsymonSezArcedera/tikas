@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 
@@ -26,6 +26,12 @@ export const metadata: Metadata = {
   },
   description:
     "AI-powered fitness companion: workout planning, calorie counting, weight and body tracking, and three AI coaches.",
+};
+
+// Let the mobile keyboard shrink the layout viewport so the chat sheet's
+// composer stays above it (h-dvh in the sheet reacts to this).
+export const viewport: Viewport = {
+  interactiveWidget: "resizes-content",
 };
 
 // Runs before first paint to apply the saved theme (dark by default) so there's

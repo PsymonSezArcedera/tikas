@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { getSession } from "@/lib/session";
 import { getLatestCoachThread } from "@/lib/chat";
 import { COACHES } from "@/lib/ai/coaches";
-import { CoachChat } from "@/components/coach-chat";
+import { CoachChatDrawer } from "@/components/coach-chat";
 import { getLatestPlan } from "./actions";
 import { WorkoutClient } from "./workout-client";
 
@@ -25,21 +25,15 @@ export default async function WorkoutPage() {
   ]);
 
   return (
-    <div className="flex flex-col gap-8">
+    <>
       <WorkoutClient initialPlan={initialPlan} />
-
-      <section className="flex flex-col gap-3">
-        <h2 className="font-display text-lg font-semibold tracking-tight">
-          Coach chat
-        </h2>
-        <CoachChat
-          coachId="FORTIS"
-          coachName={COACHES.FORTIS.name}
-          coachTitle={COACHES.FORTIS.title}
-          initialSessionId={thread.sessionId}
-          initialMessages={thread.messages}
-        />
-      </section>
-    </div>
+      <CoachChatDrawer
+        coachId="FORTIS"
+        coachName={COACHES.FORTIS.name}
+        coachTitle={COACHES.FORTIS.title}
+        initialSessionId={thread.sessionId}
+        initialMessages={thread.messages}
+      />
+    </>
   );
 }

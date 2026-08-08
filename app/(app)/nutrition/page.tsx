@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { getSession } from "@/lib/session";
 import { getLatestCoachThread } from "@/lib/chat";
 import { COACHES } from "@/lib/ai/coaches";
-import { CoachChat } from "@/components/coach-chat";
+import { CoachChatDrawer } from "@/components/coach-chat";
 import { getTodayFoodLogs } from "./actions";
 import { NutritionClient } from "./nutrition-client";
 
@@ -26,21 +26,15 @@ export default async function NutritionPage() {
   ]);
 
   return (
-    <div className="flex flex-col gap-8">
+    <>
       <NutritionClient initialLogs={initialLogs} />
-
-      <section className="flex flex-col gap-3">
-        <h2 className="font-display text-lg font-semibold tracking-tight">
-          Coach chat
-        </h2>
-        <CoachChat
-          coachId="VITA"
-          coachName={COACHES.VITA.name}
-          coachTitle={COACHES.VITA.title}
-          initialSessionId={thread.sessionId}
-          initialMessages={thread.messages}
-        />
-      </section>
-    </div>
+      <CoachChatDrawer
+        coachId="VITA"
+        coachName={COACHES.VITA.name}
+        coachTitle={COACHES.VITA.title}
+        initialSessionId={thread.sessionId}
+        initialMessages={thread.messages}
+      />
+    </>
   );
 }

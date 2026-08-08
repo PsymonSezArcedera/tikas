@@ -3,13 +3,27 @@
 import * as React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Dumbbell, Salad, Send, ShieldAlert, Sparkles } from "lucide-react";
+import { Dumbbell, Salad, Send, ShieldAlert, Sparkles, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import type { CoachId } from "@/lib/ai/coaches";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import {
+  Sheet,
+  SheetClose,
+  SheetContent,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
+
+type CoachProps = {
+  coachId: CoachId;
+  coachName: string;
+  coachTitle: string;
+  initialSessionId: string | null;
+  initialMessages: { id: string; role: "USER" | "ASSISTANT"; content: string }[];
+};
 
 // Per-coach presentation. Icons are components, so they can't cross the
 // server→client prop boundary — the page passes coachId/name/title and this
@@ -52,13 +66,8 @@ export function CoachChat({
   coachTitle,
   initialSessionId,
   initialMessages,
-}: {
-  coachId: CoachId;
-  coachName: string;
-  coachTitle: string;
-  initialSessionId: string | null;
-  initialMessages: { id: string; role: "USER" | "ASSISTANT"; content: string }[];
-}) {
+  headerAction,
+}: CoachProps & { headerAction?: React.ReactNode }) {
   const [messages, setMessages] = React.useState<ChatMessage[]>(initialMessages);
   const [input, setInput] = React.useState("");
   const [sessionId, setSessionId] = React.useState<string | null>(
@@ -151,22 +160,23 @@ export function CoachChat({
   }
 
   return (
-    <Card className="flex h-[34rem] flex-col gap-0 overflow-hidden p-0">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-3 border-b border-border px-5 py-4">
         <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
           <CoachIcon className="size-4.5" />
         </span>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="font-display text-base font-semibold leading-tight tracking-tight">
             {coachName}
           </p>
           <p className="text-xs text-muted-foreground">{coachTitle}</p>
         </div>
+        {headerAction}
       </div>
 
       {/* Transcript */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-center">
             <span className="mb-3 flex size-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -223,7 +233,44 @@ export function CoachChat({
           </Button>
         </div>
       </div>
-    </Card>
+    </div>
+  );
+}
+
+/**
+ * Persistent chat trigger + drawer. A floating action button (bottom-right)
+ * opens the coach in a right-side sheet (full-height on mobile). keepMounted
+ * keeps the CoachChat alive across open/close so an in-session conversation
+ * isn't lost. The coach shown follows coachId — the page passes the right one.
+ */
+export function CoachChatDrawer(props: CoachProps) {
+  const CoachIcon = COACH_UI[props.coachId].icon;
+  return (
+    <Sheet>
+      <SheetTrigger
+        aria-label={`Chat with ${props.coachName}`}
+        className="fixed bottom-5 right-5 z-40 inline-flex size-14 items-center justify-center gap-2 rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/25 outline-none transition hover:brightness-110 active:scale-95 focus-visible:ring-3 focus-visible:ring-ring/50 sm:size-auto sm:px-5 sm:py-3.5"
+      >
+        <CoachIcon className="size-5.5 sm:size-5" />
+        <span className="hidden text-sm font-medium sm:inline">
+          Ask {props.coachName}
+        </span>
+      </SheetTrigger>
+      <SheetContent keepMounted>
+        <SheetTitle className="sr-only">Chat with {props.coachName}</SheetTitle>
+        <CoachChat
+          {...props}
+          headerAction={
+            <SheetClose
+              aria-label="Close chat"
+              className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/40"
+            >
+              <X className="size-4" />
+            </SheetClose>
+          }
+        />
+      </SheetContent>
+    </Sheet>
   );
 }
 

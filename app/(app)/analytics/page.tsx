@@ -4,9 +4,12 @@ import { BarChart3 } from "lucide-react";
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/session";
-import { startOfUtcDay } from "@/lib/daily-activity";
+import { addDays, dayKey, dayStart, todayKey } from "@/lib/day";
+import { activeDayKeys } from "@/lib/streak";
 import { kgToDisplay, weightUnitLabel, type Unit } from "@/lib/units";
 import {
+  ActivityFrequencyChart,
+  BmiTrendChart,
   CalorieTrendChart,
   MacroSplitChart,
   WeightTrendChart,
@@ -14,12 +17,22 @@ import {
 
 export const metadata: Metadata = { title: "Analytics" };
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+// Fixed locale + UTC so the label is deterministic (server == client). The keys
+// are already app-day dates, so formatting their UTC parts reads correctly.
+const label = (key: string) =>
+  new Date(`${key}T00:00:00.000Z`).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
 
-// Fixed locale + UTC so the label is deterministic (server == client).
-const dayLabel = (d: Date) =>
-  d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
-const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+// Monday-start week key for a given day key.
+function weekStartKey(key: string): string {
+  const d = new Date(`${key}T00:00:00.000Z`);
+  const mondayOffset = (d.getUTCDay() + 6) % 7; // Mon=0 … Sun=6
+  d.setUTCDate(d.getUTCDate() - mondayOffset);
+  return d.toISOString().slice(0, 10);
+}
 
 export default async function AnalyticsPage() {
   const session = await getSession();
@@ -28,14 +41,14 @@ export default async function AnalyticsPage() {
   }
   const userId = session.user.id;
 
-  const today = startOfUtcDay(new Date());
-  const since = new Date(today.getTime() - 29 * DAY_MS); // 30-day window
+  const tKey = todayKey();
+  const foodSince = dayStart(addDays(tKey, -29)); // 30-day window (instants)
+  const activitySince = new Date(`${addDays(tKey, -63)}T00:00:00.000Z`); // ~9 weeks
 
-  // One parallel read across the sources this page needs.
-  const [user, weightLogs, foodLogs] = await Promise.all([
+  const [user, weightLogs, foodLogs, activities] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
-      select: { unitPreference: true, goalWeight: true },
+      select: { unitPreference: true, goalWeight: true, height: true },
     }),
     prisma.weightLog.findMany({
       where: { userId },
@@ -43,27 +56,43 @@ export default async function AnalyticsPage() {
       select: { weight: true, date: true },
     }),
     prisma.foodLog.findMany({
-      where: { userId, date: { gte: since } },
+      where: { userId, date: { gte: foodSince } },
       orderBy: { date: "asc" },
       select: { date: true, calories: true, protein: true, carbs: true, fat: true },
+    }),
+    prisma.dailyActivity.findMany({
+      where: { userId, date: { gte: activitySince } },
+      select: { date: true, loggedFood: true, loggedWeight: true, workedOut: true },
     }),
   ]);
 
   const unit = (user?.unitPreference ?? "METRIC") as Unit;
   const goalKg = user?.goalWeight ?? null;
+  const heightCm = user?.height ?? null;
 
   // Weight trend — convert metric → display units.
   const weightData = weightLogs.map((w) => ({
-    label: dayLabel(w.date),
+    label: label(dayKey(w.date)),
     weight: kgToDisplay(w.weight, unit),
   }));
   const goal = goalKg != null ? kgToDisplay(goalKg, unit) : null;
 
-  // Calorie trend — daily totals over the window (only days with logs).
+  // BMI progression — weight (kg) / height (m)². Height is a single profile
+  // value, so BMI tracks weight; unitless, no display conversion.
+  const heightM = heightCm != null ? heightCm / 100 : null;
+  const bmiData =
+    heightM && heightM > 0
+      ? weightLogs.map((w) => ({
+          label: label(dayKey(w.date)),
+          bmi: Math.round((w.weight / (heightM * heightM)) * 10) / 10,
+        }))
+      : [];
+
+  // Calorie trend (daily totals, app-day) + macro totals over the window.
   const byDay = new Map<string, number>();
   const macros = { protein: 0, carbs: 0, fat: 0 };
   for (const f of foodLogs) {
-    const key = isoDay(startOfUtcDay(f.date));
+    const key = dayKey(f.date);
     byDay.set(key, (byDay.get(key) ?? 0) + f.calories);
     macros.protein += f.protein;
     macros.carbs += f.carbs;
@@ -71,10 +100,22 @@ export default async function AnalyticsPage() {
   }
   const calorieData = [...byDay.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, calories]) => ({
-      label: dayLabel(new Date(`${key}T00:00:00.000Z`)),
-      calories: Math.round(calories),
-    }));
+    .map(([key, calories]) => ({ label: label(key), calories: Math.round(calories) }));
+
+  // Weekly activity — active days (any log) per week, last 8 weeks (incl. zeros).
+  const active = activeDayKeys(activities);
+  const thisWeek = weekStartKey(tKey);
+  const weeks = Array.from({ length: 8 }, (_, i) => {
+    const key = weekStartKey(addDays(thisWeek, -7 * (7 - i)));
+    return { key, label: label(key), days: 0 };
+  });
+  const weekIndex = new Map(weeks.map((w, i) => [w.key, i]));
+  for (const k of active) {
+    const idx = weekIndex.get(weekStartKey(k));
+    if (idx != null) weeks[idx].days += 1;
+  }
+  const activityData = weeks.map((w) => ({ label: w.label, days: w.days }));
+  const hasActivity = weeks.some((w) => w.days > 0);
 
   return (
     <div className="flex flex-col gap-6">
@@ -100,6 +141,9 @@ export default async function AnalyticsPage() {
             goal={goal}
           />
         </div>
+        <div className="lg:col-span-2">
+          <BmiTrendChart data={bmiData} />
+        </div>
         <CalorieTrendChart data={calorieData} />
         <MacroSplitChart
           protein={macros.protein}
@@ -107,6 +151,9 @@ export default async function AnalyticsPage() {
           fat={macros.fat}
           periodLabel="last 30 days"
         />
+        <div className="lg:col-span-2">
+          <ActivityFrequencyChart data={activityData} hasActivity={hasActivity} />
+        </div>
       </div>
     </div>
   );

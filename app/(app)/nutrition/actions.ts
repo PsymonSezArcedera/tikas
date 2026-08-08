@@ -2,7 +2,8 @@
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/session";
-import { markDailyActivity, startOfUtcDay } from "@/lib/daily-activity";
+import { markDailyActivity } from "@/lib/daily-activity";
+import { addDays, dayStart, todayKey } from "@/lib/day";
 import { foodLogSchema } from "@/lib/validations";
 
 export type MealType = "BREAKFAST" | "LUNCH" | "DINNER" | "SNACK";
@@ -74,11 +75,12 @@ const toDTO = (r: {
   date: r.date.toISOString(),
 });
 
-/** Today's food logs (UTC day), matching how DailyActivity buckets the day. */
+/** Today's food logs (app-day, UTC+8), matching how DailyActivity buckets. */
 export async function getTodayFoodLogs(): Promise<FoodLogDTO[]> {
   const userId = await requireUserId();
-  const start = startOfUtcDay(new Date());
-  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  const tKey = todayKey();
+  const start = dayStart(tKey);
+  const end = dayStart(addDays(tKey, 1));
 
   const rows = await prisma.foodLog.findMany({
     where: { userId, date: { gte: start, lt: end } },

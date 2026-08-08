@@ -8,12 +8,20 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceArea,
   ReferenceLine,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
-import { ArrowRight, Flame, PieChart as PieIcon, Scale } from "lucide-react";
+import {
+  Activity,
+  ArrowRight,
+  Flame,
+  Gauge,
+  PieChart as PieIcon,
+  Scale,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -237,7 +245,157 @@ export function CalorieTrendChart({ data }: { data: CaloriePoint[] }) {
   );
 }
 
-/* ----------------------------- macro donut ------------------------------- */
+/* ------------------------------ BMI trend -------------------------------- */
+
+export type BmiPoint = { label: string; bmi: number };
+
+// Healthy BMI band (WHO): 18.5–24.9.
+const BMI_HEALTHY: [number, number] = [18.5, 25];
+
+export function BmiTrendChart({ data }: { data: BmiPoint[] }) {
+  const ys = [...data.map((d) => d.bmi), ...BMI_HEALTHY];
+  const min = ys.length ? Math.min(...ys) : 0;
+  const max = ys.length ? Math.max(...ys) : 0;
+  const pad = Math.max(1, (max - min) * 0.2);
+  const domain: [number, number] = [
+    Math.floor(min - pad),
+    Math.ceil(max + pad),
+  ];
+
+  return (
+    <ChartCard
+      title="BMI progression"
+      description="Body mass index from your weigh-ins"
+      icon={Gauge}
+    >
+      {data.length === 0 ? (
+        <ChartEmpty
+          message="No weigh-ins yet — log a few to see your BMI over time."
+          cta="Log a weigh-in"
+          href="/tracking"
+        />
+      ) : (
+        <ChartContainer className="h-56">
+          <LineChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: -8 }}>
+            <CartesianGrid vertical={false} stroke={GRID_STROKE} strokeDasharray="4 4" />
+            {/* Shaded healthy range + its bounds. */}
+            <ReferenceArea
+              y1={BMI_HEALTHY[0]}
+              y2={BMI_HEALTHY[1]}
+              fill="var(--brand)"
+              fillOpacity={0.07}
+              stroke="none"
+              label={{
+                value: "Healthy",
+                position: "insideTopLeft",
+                fill: "var(--muted-foreground)",
+                fontSize: 11,
+                fontFamily: "var(--font-space-grotesk)",
+              }}
+            />
+            <ReferenceLine y={BMI_HEALTHY[0]} stroke="var(--border)" strokeDasharray="4 4" />
+            <ReferenceLine y={BMI_HEALTHY[1]} stroke="var(--border)" strokeDasharray="4 4" />
+            <XAxis
+              dataKey="label"
+              tick={AXIS_TICK}
+              tickLine={false}
+              axisLine={false}
+              minTickGap={24}
+              tickMargin={8}
+            />
+            <YAxis
+              domain={domain}
+              tick={AXIS_TICK}
+              tickLine={false}
+              axisLine={false}
+              width={40}
+            />
+            <Tooltip
+              cursor={{ stroke: "var(--border)", strokeWidth: 1 }}
+              content={<ChartTooltip valueFormatter={(v) => `${v} BMI`} />}
+            />
+            <Line
+              type="monotone"
+              dataKey="bmi"
+              name="BMI"
+              stroke="var(--brand)"
+              strokeWidth={2}
+              dot={{ r: 3, fill: "var(--brand)", strokeWidth: 0 }}
+              activeDot={{ r: 5 }}
+            />
+          </LineChart>
+        </ChartContainer>
+      )}
+    </ChartCard>
+  );
+}
+
+/* --------------------------- activity frequency -------------------------- */
+
+export type ActivityPoint = { label: string; days: number };
+
+export function ActivityFrequencyChart({
+  data,
+  hasActivity,
+}: {
+  data: ActivityPoint[];
+  hasActivity: boolean;
+}) {
+  return (
+    <ChartCard
+      title="Weekly activity"
+      description="Active days per week (any logged weight, food, or workout)"
+      icon={Activity}
+    >
+      {!hasActivity ? (
+        <ChartEmpty
+          message="No activity yet — log a weigh-in or a meal to build your streak."
+          cta="Log something"
+          href="/tracking"
+        />
+      ) : (
+        <ChartContainer className="h-56">
+          <BarChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: -8 }}>
+            <CartesianGrid vertical={false} stroke={GRID_STROKE} strokeDasharray="4 4" />
+            <XAxis
+              dataKey="label"
+              tick={AXIS_TICK}
+              tickLine={false}
+              axisLine={false}
+              tickMargin={8}
+            />
+            <YAxis
+              domain={[0, 7]}
+              ticks={[0, 1, 2, 3, 4, 5, 6, 7]}
+              tick={AXIS_TICK}
+              tickLine={false}
+              axisLine={false}
+              width={28}
+            />
+            <Tooltip
+              cursor={{ fill: "var(--muted)", opacity: 0.35 }}
+              content={
+                <ChartTooltip
+                  labelFormatter={(l) => `Week of ${l}`}
+                  valueFormatter={(v) => `${v} ${v === 1 ? "day" : "days"}`}
+                />
+              }
+            />
+            <Bar
+              dataKey="days"
+              name="Active days"
+              fill="var(--brand)"
+              radius={[4, 4, 0, 0]}
+              maxBarSize={44}
+            />
+          </BarChart>
+        </ChartContainer>
+      )}
+    </ChartCard>
+  );
+}
+
+/* ----------------------------- macro split ------------------------------- */
 
 const MACROS = [
   { key: "protein", name: "Protein", color: "var(--macro-protein)" },

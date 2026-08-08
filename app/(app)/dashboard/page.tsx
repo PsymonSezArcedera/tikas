@@ -4,7 +4,8 @@ import { Dumbbell, Flame, PieChart, Scale, Target, Utensils } from "lucide-react
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/session";
-import { startOfUtcDay } from "@/lib/daily-activity";
+import { addDays, dayStart, todayKey } from "@/lib/day";
+import { activeDayKeys, computeStreak } from "@/lib/streak";
 import { kgToDisplay, weightUnitLabel, type Unit } from "@/lib/units";
 import {
   EmptyStat,
@@ -16,25 +17,6 @@ import {
 
 export const metadata: Metadata = { title: "Dashboard" };
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-const isoDay = (d: Date) => d.toISOString().slice(0, 10);
-
-// Consecutive active days ending today — or yesterday, so an as-yet-unlogged
-// today doesn't drop a running streak. Reads from DailyActivity only.
-function computeStreak(activeDays: Set<string>, today: Date): number {
-  let cursor = startOfUtcDay(today);
-  if (!activeDays.has(isoDay(cursor))) {
-    cursor = new Date(cursor.getTime() - DAY_MS);
-    if (!activeDays.has(isoDay(cursor))) return 0;
-  }
-  let streak = 0;
-  while (activeDays.has(isoDay(cursor))) {
-    streak++;
-    cursor = new Date(cursor.getTime() - DAY_MS);
-  }
-  return streak;
-}
-
 export default async function DashboardPage() {
   const session = await getSession();
   if (!session) {
@@ -43,9 +25,11 @@ export default async function DashboardPage() {
   const userId = session.user.id;
 
   const now = new Date();
-  const today = startOfUtcDay(now);
-  const tomorrow = new Date(today.getTime() + DAY_MS);
-  const streakSince = new Date(today.getTime() - 366 * DAY_MS);
+  const tKey = todayKey(now);
+  const todayStart = dayStart(tKey);
+  const tomorrowStart = dayStart(addDays(tKey, 1));
+  // DailyActivity.date is stored at UTC midnight of the app-day key.
+  const activitySince = new Date(`${addDays(tKey, -366)}T00:00:00.000Z`);
 
   // One parallel read across the three logging tables.
   const [user, weightLogs, foodAgg, activities] = await Promise.all([
@@ -60,12 +44,12 @@ export default async function DashboardPage() {
       select: { weight: true },
     }),
     prisma.foodLog.aggregate({
-      where: { userId, date: { gte: today, lt: tomorrow } },
+      where: { userId, date: { gte: todayStart, lt: tomorrowStart } },
       _sum: { calories: true, protein: true, carbs: true, fat: true },
       _count: true,
     }),
     prisma.dailyActivity.findMany({
-      where: { userId, date: { gte: streakSince } },
+      where: { userId, date: { gte: activitySince } },
       select: {
         date: true,
         loggedFood: true,
@@ -110,10 +94,7 @@ export default async function DashboardPage() {
   const fat = Math.round(foodAgg._sum.fat ?? 0);
 
   // Streak
-  const activeDays = new Set<string>();
-  for (const a of activities) {
-    if (a.loggedFood || a.loggedWeight || a.workedOut) activeDays.add(isoDay(a.date));
-  }
+  const activeDays = activeDayKeys(activities);
   const hasActivity = activeDays.size > 0;
   const streak = computeStreak(activeDays, now);
 

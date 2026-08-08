@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
-import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { getLatestCoachThread } from "@/lib/chat";
 import { COACHES } from "@/lib/ai/coaches";
+import { CoachChat } from "@/components/coach-chat";
 import { getLatestPlan } from "./actions";
 import { WorkoutClient } from "./workout-client";
-import { CoachChat } from "./coach-chat";
 
 export const metadata: Metadata = { title: "Workout" };
 
@@ -19,22 +19,10 @@ export default async function WorkoutPage() {
     redirect("/sign-in");
   }
 
-  // Most recent Fortis conversation, so reopening the page restores the thread.
-  const [initialPlan, fortisSession] = await Promise.all([
+  const [initialPlan, thread] = await Promise.all([
     getLatestPlan(),
-    prisma.chatSession.findFirst({
-      where: { userId: session.user.id, coachType: "FORTIS" },
-      orderBy: { createdAt: "desc" },
-      include: { messages: { orderBy: { timestamp: "asc" } } },
-    }),
+    getLatestCoachThread(session.user.id, "FORTIS"),
   ]);
-
-  const initialMessages =
-    fortisSession?.messages.map((m) => ({
-      id: m.id,
-      role: m.role,
-      content: m.message,
-    })) ?? [];
 
   return (
     <div className="flex flex-col gap-8">
@@ -48,8 +36,8 @@ export default async function WorkoutPage() {
           coachId="FORTIS"
           coachName={COACHES.FORTIS.name}
           coachTitle={COACHES.FORTIS.title}
-          initialSessionId={fortisSession?.id ?? null}
-          initialMessages={initialMessages}
+          initialSessionId={thread.sessionId}
+          initialMessages={thread.messages}
         />
       </section>
     </div>

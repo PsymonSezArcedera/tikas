@@ -3,12 +3,37 @@
 import * as React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Dumbbell, Send, ShieldAlert } from "lucide-react";
+import { Dumbbell, Salad, Send, ShieldAlert, Sparkles } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 import type { CoachId } from "@/lib/ai/coaches";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+
+// Per-coach presentation. Icons are components, so they can't cross the
+// server→client prop boundary — the page passes coachId/name/title and this
+// client map supplies the icon, empty-state hint, and disclaimer noun.
+const COACH_UI: Record<
+  CoachId,
+  { icon: LucideIcon; intro: string; guidance: string }
+> = {
+  FORTIS: {
+    icon: Dumbbell,
+    intro: "Ask about training, exercise form, or how to structure your week.",
+    guidance: "training guidance",
+  },
+  VITA: {
+    icon: Salad,
+    intro: "Ask about calories, macros, meals, or building better eating habits.",
+    guidance: "nutrition guidance",
+  },
+  LUX: {
+    icon: Sparkles,
+    intro: "Ask about sleep, recovery, stress, motivation, or building habits.",
+    guidance: "wellness guidance",
+  },
+};
 
 type ChatMessage = {
   id: string;
@@ -41,6 +66,9 @@ export function CoachChat({
   );
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  const ui = COACH_UI[coachId];
+  const CoachIcon = ui.icon;
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
@@ -127,7 +155,7 @@ export function CoachChat({
       {/* Header */}
       <div className="flex items-center gap-3 border-b border-border px-5 py-4">
         <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-          <Dumbbell className="size-4.5" />
+          <CoachIcon className="size-4.5" />
         </span>
         <div className="min-w-0">
           <p className="font-display text-base font-semibold leading-tight tracking-tight">
@@ -142,11 +170,11 @@ export function CoachChat({
         {messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-center">
             <span className="mb-3 flex size-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <Dumbbell className="size-6" />
+              <CoachIcon className="size-6" />
             </span>
             <p className="text-sm font-medium">Chat with {coachName}</p>
             <p className="mt-1 max-w-xs text-sm text-muted-foreground">
-              Ask about training, exercise form, or how to structure your week.
+              {ui.intro}
             </p>
           </div>
         ) : (
@@ -162,7 +190,7 @@ export function CoachChat({
       <div className="flex items-center gap-2 border-t border-border bg-secondary/30 px-5 py-2 text-xs text-muted-foreground">
         <ShieldAlert className="size-3.5 shrink-0" />
         <span>
-          {coachName} gives training guidance, not medical advice. For pain,
+          {coachName} gives {ui.guidance}, not medical advice. For pain,
           injuries, or health conditions, see a qualified professional.
         </span>
       </div>

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Flame, Salad, UtensilsCrossed } from "lucide-react";
+import { Flame, Pencil, Salad, Trash2, UtensilsCrossed } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -13,12 +13,20 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import {
   createFoodLog,
+  deleteFoodLog,
   getTodayFoodLogs,
+  updateFoodLog,
   type FoodLogDTO,
   type FoodLogInputRaw,
   type MealType,
@@ -52,6 +60,50 @@ const emptyForm = {
   fat: "",
 };
 
+type FoodFormState = typeof emptyForm;
+
+// Field-level validation shared by the log form and the edit dialog — same rules,
+// so both refuse the same bad input before hitting the Server Action / Zod.
+function formError(form: FoodFormState): string | null {
+  if (!form.foodName.trim()) return "Enter a food name";
+  if (!form.quantity.trim() || !form.servingSize.trim())
+    return "Enter quantity and serving size";
+  if (!form.calories.trim()) return "Enter calories";
+  return null;
+}
+
+const toForm = (f: FoodLogDTO): FoodFormState => ({
+  foodName: f.foodName,
+  quantity: String(f.quantity),
+  servingSize: String(f.servingSize),
+  servingUnit: f.servingUnit,
+  calories: String(f.calories),
+  protein: String(f.protein),
+  carbs: String(f.carbs),
+  fat: String(f.fat),
+});
+
+// A raw form + meal, shaped for the optimistic cache entry (numbers coerced the
+// same way the Server Action will).
+const optimisticFrom = (
+  id: string,
+  meal: MealType,
+  form: FoodFormState,
+  date: string,
+): FoodLogDTO => ({
+  id,
+  mealType: meal,
+  foodName: form.foodName,
+  quantity: Number(form.quantity),
+  servingSize: Number(form.servingSize),
+  servingUnit: form.servingUnit,
+  calories: Number(form.calories) || 0,
+  protein: Number(form.protein) || 0,
+  carbs: Number(form.carbs) || 0,
+  fat: Number(form.fat) || 0,
+  date,
+});
+
 export function NutritionClient({
   initialLogs,
 }: {
@@ -62,13 +114,23 @@ export function NutritionClient({
   const [form, setForm] = React.useState(emptyForm);
   const [error, setError] = React.useState<string | null>(null);
 
+  // Edit dialog state.
+  const [editing, setEditing] = React.useState<FoodLogDTO | null>(null);
+  const [editMeal, setEditMeal] = React.useState<MealType>("BREAKFAST");
+  const [editForm, setEditForm] = React.useState(emptyForm);
+  const [editError, setEditError] = React.useState<string | null>(null);
+
+  // Delete-confirm dialog state.
+  const [deleting, setDeleting] = React.useState<FoodLogDTO | null>(null);
+  const [deleteError, setDeleteError] = React.useState<string | null>(null);
+
   const { data = [] } = useQuery({
     queryKey: FOOD_KEY,
     queryFn: getTodayFoodLogs,
     initialData: initialLogs,
   });
 
-  const mutation = useMutation({
+  const createMutation = useMutation({
     mutationFn: async (input: FoodLogInputRaw) => {
       const res = await createFoodLog(input);
       if (!res.ok) throw new Error(res.error);
@@ -78,19 +140,12 @@ export function NutritionClient({
       setError(null);
       await qc.cancelQueries({ queryKey: FOOD_KEY });
       const prev = qc.getQueryData<FoodLogDTO[]>(FOOD_KEY) ?? [];
-      const optimistic: FoodLogDTO = {
-        id: `optimistic-${Date.now()}`,
-        mealType: input.mealType as MealType,
-        foodName: input.foodName,
-        quantity: Number(input.quantity),
-        servingSize: Number(input.servingSize),
-        servingUnit: input.servingUnit,
-        calories: Number(input.calories) || 0,
-        protein: Number(input.protein) || 0,
-        carbs: Number(input.carbs) || 0,
-        fat: Number(input.fat) || 0,
-        date: new Date().toISOString(),
-      };
+      const optimistic = optimisticFrom(
+        `optimistic-${Date.now()}`,
+        input.mealType as MealType,
+        input,
+        new Date().toISOString(),
+      );
       qc.setQueryData<FoodLogDTO[]>(FOOD_KEY, [optimistic, ...prev]);
       return { prev };
     },
@@ -102,17 +157,90 @@ export function NutritionClient({
     onSettled: () => qc.invalidateQueries({ queryKey: FOOD_KEY }),
   });
 
-  function set<K extends keyof typeof emptyForm>(key: K, value: string) {
+  const updateMutation = useMutation({
+    mutationFn: async (vars: { id: string; input: FoodLogInputRaw }) => {
+      const res = await updateFoodLog(vars.id, vars.input);
+      if (!res.ok) throw new Error(res.error);
+      return res.data;
+    },
+    onMutate: async (vars) => {
+      setEditError(null);
+      await qc.cancelQueries({ queryKey: FOOD_KEY });
+      const prev = qc.getQueryData<FoodLogDTO[]>(FOOD_KEY) ?? [];
+      const patched = optimisticFrom(
+        vars.id,
+        vars.input.mealType as MealType,
+        vars.input,
+        editing?.date ?? new Date().toISOString(),
+      );
+      qc.setQueryData<FoodLogDTO[]>(
+        FOOD_KEY,
+        prev.map((f) => (f.id === vars.id ? patched : f)),
+      );
+      return { prev };
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(FOOD_KEY, ctx.prev);
+      setEditError(err instanceof Error ? err.message : "Could not update entry");
+    },
+    onSuccess: () => setEditing(null),
+    onSettled: () => qc.invalidateQueries({ queryKey: FOOD_KEY }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await deleteFoodLog(id);
+      if (!res.ok) throw new Error(res.error);
+      return res.data;
+    },
+    onMutate: async (id) => {
+      setDeleteError(null);
+      await qc.cancelQueries({ queryKey: FOOD_KEY });
+      const prev = qc.getQueryData<FoodLogDTO[]>(FOOD_KEY) ?? [];
+      qc.setQueryData<FoodLogDTO[]>(
+        FOOD_KEY,
+        prev.filter((f) => f.id !== id),
+      );
+      return { prev };
+    },
+    onError: (err, _id, ctx) => {
+      if (ctx?.prev) qc.setQueryData(FOOD_KEY, ctx.prev);
+      setDeleteError(err instanceof Error ? err.message : "Could not delete entry");
+    },
+    onSuccess: () => setDeleting(null),
+    onSettled: () => qc.invalidateQueries({ queryKey: FOOD_KEY }),
+  });
+
+  const setCreate = (key: keyof FoodFormState, value: string) =>
     setForm((f) => ({ ...f, [key]: value }));
-  }
+  const setEdit = (key: keyof FoodFormState, value: string) =>
+    setEditForm((f) => ({ ...f, [key]: value }));
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.foodName.trim()) return setError("Enter a food name");
-    if (!form.quantity.trim() || !form.servingSize.trim())
-      return setError("Enter quantity and serving size");
-    if (!form.calories.trim()) return setError("Enter calories");
-    mutation.mutate({ mealType: meal, ...form });
+    const err = formError(form);
+    if (err) return setError(err);
+    createMutation.mutate({ mealType: meal, ...form });
+  }
+
+  function openEdit(f: FoodLogDTO) {
+    setEditMeal(f.mealType);
+    setEditForm(toForm(f));
+    setEditError(null);
+    setEditing(f);
+  }
+
+  function onEditSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editing) return;
+    const err = formError(editForm);
+    if (err) return setEditError(err);
+    updateMutation.mutate({ id: editing.id, input: { mealType: editMeal, ...editForm } });
+  }
+
+  function askDelete(f: FoodLogDTO) {
+    setDeleteError(null);
+    setDeleting(f);
   }
 
   const totals = data.reduce(
@@ -155,137 +283,13 @@ export function NutritionClient({
           </CardHeader>
           <CardContent>
             <form onSubmit={onSubmit} className="flex flex-col gap-4">
-              <div className="flex flex-col gap-2">
-                <Label>Meal</Label>
-                <div className="grid grid-cols-2 gap-1 rounded-xl border border-border bg-secondary/40 p-1 sm:grid-cols-4">
-                  {MEALS.map((m) => (
-                    <button
-                      key={m.value}
-                      type="button"
-                      onClick={() => setMeal(m.value)}
-                      aria-pressed={meal === m.value}
-                      className={cn(
-                        segmentItem,
-                        meal === m.value && segmentItemActive,
-                      )}
-                    >
-                      {m.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="foodName">Food</Label>
-                <Input
-                  id="foodName"
-                  placeholder="e.g. Grilled chicken breast"
-                  value={form.foodName}
-                  onChange={(e) => set("foodName", e.target.value)}
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-3 gap-3">
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="quantity">Qty</Label>
-                  <Input
-                    id="quantity"
-                    type="number"
-                    inputMode="decimal"
-                    step="0.1"
-                    min="0.1"
-                    placeholder="servings"
-                    value={form.quantity}
-                    onChange={(e) => set("quantity", e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="servingSize">Serving</Label>
-                  <Input
-                    id="servingSize"
-                    type="number"
-                    inputMode="decimal"
-                    step="0.1"
-                    min="0.1"
-                    placeholder="size"
-                    value={form.servingSize}
-                    onChange={(e) => set("servingSize", e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="servingUnit">Unit</Label>
-                  <Select
-                    id="servingUnit"
-                    value={form.servingUnit}
-                    onChange={(e) => set("servingUnit", e.target.value)}
-                  >
-                    {SERVING_UNITS.map((u) => (
-                      <option key={u} value={u}>
-                        {u}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="calories">Calories</Label>
-                  <Input
-                    id="calories"
-                    type="number"
-                    inputMode="decimal"
-                    step="1"
-                    min="0"
-                    placeholder="kcal"
-                    value={form.calories}
-                    onChange={(e) => set("calories", e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="protein">Protein</Label>
-                  <Input
-                    id="protein"
-                    type="number"
-                    inputMode="decimal"
-                    step="0.1"
-                    min="0"
-                    placeholder="g"
-                    value={form.protein}
-                    onChange={(e) => set("protein", e.target.value)}
-                  />
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="carbs">Carbs</Label>
-                  <Input
-                    id="carbs"
-                    type="number"
-                    inputMode="decimal"
-                    step="0.1"
-                    min="0"
-                    placeholder="g"
-                    value={form.carbs}
-                    onChange={(e) => set("carbs", e.target.value)}
-                  />
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="fat">Fat</Label>
-                  <Input
-                    id="fat"
-                    type="number"
-                    inputMode="decimal"
-                    step="0.1"
-                    min="0"
-                    placeholder="g"
-                    value={form.fat}
-                    onChange={(e) => set("fat", e.target.value)}
-                  />
-                </div>
-              </div>
+              <FoodFields
+                idPrefix="log"
+                meal={meal}
+                setMeal={setMeal}
+                form={form}
+                set={setCreate}
+              />
 
               {error && (
                 <p className="text-sm text-destructive" role="alert">
@@ -293,8 +297,12 @@ export function NutritionClient({
                 </p>
               )}
 
-              <Button type="submit" disabled={mutation.isPending} className="h-10">
-                {mutation.isPending ? "Saving…" : "Log food"}
+              <Button
+                type="submit"
+                disabled={createMutation.isPending}
+                className="h-10"
+              >
+                {createMutation.isPending ? "Saving…" : "Log food"}
               </Button>
             </form>
           </CardContent>
@@ -312,11 +320,255 @@ export function NutritionClient({
           </CardHeader>
           <CardContent className="flex flex-col gap-5">
             <DailyTotals totals={totals} />
-            <MealBreakdown logs={data} />
+            <MealBreakdown logs={data} onEdit={openEdit} onDelete={askDelete} />
           </CardContent>
         </Card>
       </div>
+
+      {/* Edit entry — same fields as the log form, pre-filled. */}
+      <Dialog
+        open={editing !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditing(null);
+        }}
+      >
+        <DialogContent>
+          <DialogTitle className="font-display text-lg font-semibold tracking-tight">
+            Edit entry
+          </DialogTitle>
+          <DialogDescription className="mt-1 text-sm text-muted-foreground">
+            Update the details and save — your daily totals update instantly.
+          </DialogDescription>
+          <form onSubmit={onEditSubmit} className="mt-4 flex flex-col gap-4">
+            <FoodFields
+              idPrefix="edit"
+              meal={editMeal}
+              setMeal={setEditMeal}
+              form={editForm}
+              set={setEdit}
+            />
+
+            {editError && (
+              <p className="text-sm text-destructive" role="alert">
+                {editError}
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <Button
+                type="submit"
+                disabled={updateMutation.isPending}
+                className="h-10 flex-1"
+              >
+                {updateMutation.isPending ? "Saving…" : "Save changes"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10"
+                onClick={() => setEditing(null)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirm — small, on-brand, not a browser confirm(). */}
+      <Dialog
+        open={deleting !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleting(null);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogTitle className="font-display text-lg font-semibold tracking-tight">
+            Delete entry?
+          </DialogTitle>
+          <DialogDescription className="mt-1 text-sm text-muted-foreground">
+            Remove {deleting ? `“${deleting.foodName}”` : "this entry"} from
+            today&apos;s log? This can&apos;t be undone.
+          </DialogDescription>
+
+          {deleteError && (
+            <p className="mt-3 text-sm text-destructive" role="alert">
+              {deleteError}
+            </p>
+          )}
+
+          <div className="mt-5 flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9"
+              onClick={() => setDeleting(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              className="h-9"
+              disabled={deleteMutation.isPending}
+              onClick={() => deleting && deleteMutation.mutate(deleting.id)}
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Delete"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+// Shared food fields: meal segmented control, food name, quantity/serving/unit,
+// and calories + macros. `idPrefix` keeps input ids unique across the two mounted
+// instances (log form + edit dialog).
+function FoodFields({
+  idPrefix,
+  meal,
+  setMeal,
+  form,
+  set,
+}: {
+  idPrefix: string;
+  meal: MealType;
+  setMeal: (m: MealType) => void;
+  form: FoodFormState;
+  set: (key: keyof FoodFormState, value: string) => void;
+}) {
+  return (
+    <>
+      <div className="flex flex-col gap-2">
+        <Label>Meal</Label>
+        <div className="grid grid-cols-2 gap-1 rounded-xl border border-border bg-secondary/40 p-1 sm:grid-cols-4">
+          {MEALS.map((m) => (
+            <button
+              key={m.value}
+              type="button"
+              onClick={() => setMeal(m.value)}
+              aria-pressed={meal === m.value}
+              className={cn(segmentItem, meal === m.value && segmentItemActive)}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label htmlFor={`${idPrefix}-foodName`}>Food</Label>
+        <Input
+          id={`${idPrefix}-foodName`}
+          placeholder="e.g. Grilled chicken breast"
+          value={form.foodName}
+          onChange={(e) => set("foodName", e.target.value)}
+          required
+        />
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <div className="flex flex-col gap-2">
+          <Label htmlFor={`${idPrefix}-quantity`}>Qty</Label>
+          <Input
+            id={`${idPrefix}-quantity`}
+            type="number"
+            inputMode="decimal"
+            step="0.1"
+            min="0.1"
+            placeholder="servings"
+            value={form.quantity}
+            onChange={(e) => set("quantity", e.target.value)}
+            required
+          />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor={`${idPrefix}-servingSize`}>Serving</Label>
+          <Input
+            id={`${idPrefix}-servingSize`}
+            type="number"
+            inputMode="decimal"
+            step="0.1"
+            min="0.1"
+            placeholder="size"
+            value={form.servingSize}
+            onChange={(e) => set("servingSize", e.target.value)}
+            required
+          />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor={`${idPrefix}-servingUnit`}>Unit</Label>
+          <Select
+            id={`${idPrefix}-servingUnit`}
+            value={form.servingUnit}
+            onChange={(e) => set("servingUnit", e.target.value)}
+          >
+            {SERVING_UNITS.map((u) => (
+              <option key={u} value={u}>
+                {u}
+              </option>
+            ))}
+          </Select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="flex flex-col gap-2">
+          <Label htmlFor={`${idPrefix}-calories`}>Calories</Label>
+          <Input
+            id={`${idPrefix}-calories`}
+            type="number"
+            inputMode="decimal"
+            step="1"
+            min="0"
+            placeholder="kcal"
+            value={form.calories}
+            onChange={(e) => set("calories", e.target.value)}
+            required
+          />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor={`${idPrefix}-protein`}>Protein</Label>
+          <Input
+            id={`${idPrefix}-protein`}
+            type="number"
+            inputMode="decimal"
+            step="0.1"
+            min="0"
+            placeholder="g"
+            value={form.protein}
+            onChange={(e) => set("protein", e.target.value)}
+          />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor={`${idPrefix}-carbs`}>Carbs</Label>
+          <Input
+            id={`${idPrefix}-carbs`}
+            type="number"
+            inputMode="decimal"
+            step="0.1"
+            min="0"
+            placeholder="g"
+            value={form.carbs}
+            onChange={(e) => set("carbs", e.target.value)}
+          />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor={`${idPrefix}-fat`}>Fat</Label>
+          <Input
+            id={`${idPrefix}-fat`}
+            type="number"
+            inputMode="decimal"
+            step="0.1"
+            min="0"
+            placeholder="g"
+            value={form.fat}
+            onChange={(e) => set("fat", e.target.value)}
+          />
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -358,7 +610,15 @@ function MacroStat({ label, grams }: { label: string; grams: number }) {
   );
 }
 
-function MealBreakdown({ logs }: { logs: FoodLogDTO[] }) {
+function MealBreakdown({
+  logs,
+  onEdit,
+  onDelete,
+}: {
+  logs: FoodLogDTO[];
+  onEdit: (f: FoodLogDTO) => void;
+  onDelete: (f: FoodLogDTO) => void;
+}) {
   if (logs.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
@@ -385,29 +645,59 @@ function MealBreakdown({ logs }: { logs: FoodLogDTO[] }) {
               </span>
             </div>
             <ul className="flex flex-col">
-              {items.map((f) => (
-                <li
-                  key={f.id}
-                  className={cn(
-                    "flex items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-b-0",
-                    f.id.startsWith("optimistic-") && "opacity-60",
-                  )}
-                >
-                  <span className="min-w-0">
-                    <span className="font-medium text-foreground">
-                      {f.foodName}
+              {items.map((f) => {
+                // Optimistic (not-yet-persisted) rows have no real id to act on.
+                const pending = f.id.startsWith("optimistic-");
+                return (
+                  <li
+                    key={f.id}
+                    className={cn(
+                      "group flex items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-b-0",
+                      pending && "opacity-60",
+                    )}
+                  >
+                    <span className="min-w-0">
+                      <span className="font-medium text-foreground">
+                        {f.foodName}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        {f.quantity} × {f.servingSize} {f.servingUnit}
+                        {f.protein + f.carbs + f.fat > 0 &&
+                          ` · P${round(f.protein)} C${round(f.carbs)} F${round(f.fat)}`}
+                      </span>
                     </span>
-                    <span className="block text-xs text-muted-foreground">
-                      {f.quantity} × {f.servingSize} {f.servingUnit}
-                      {f.protein + f.carbs + f.fat > 0 &&
-                        ` · P${round(f.protein)} C${round(f.carbs)} F${round(f.fat)}`}
+                    <span className="flex shrink-0 items-center gap-0.5">
+                      <span className="mr-1 font-medium text-foreground tabular-nums">
+                        {round(f.calories)} kcal
+                      </span>
+                      {!pending && (
+                        <>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            className="text-muted-foreground hover:text-foreground"
+                            aria-label={`Edit ${f.foodName}`}
+                            onClick={() => onEdit(f)}
+                          >
+                            <Pencil />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            className="text-muted-foreground hover:text-destructive"
+                            aria-label={`Delete ${f.foodName}`}
+                            onClick={() => onDelete(f)}
+                          >
+                            <Trash2 />
+                          </Button>
+                        </>
+                      )}
                     </span>
-                  </span>
-                  <span className="shrink-0 font-medium text-foreground">
-                    {round(f.calories)} kcal
-                  </span>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           </div>
         );

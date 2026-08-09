@@ -2,7 +2,7 @@
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/session";
-import { markDailyActivity } from "@/lib/daily-activity";
+import { markDailyActivity, reevaluateLoggedFood } from "@/lib/daily-activity";
 import { addDays, dayStart, todayKey } from "@/lib/day";
 import { foodLogSchema } from "@/lib/validations";
 
@@ -133,4 +133,84 @@ export async function createFoodLog(
   await markDailyActivity(userId, date, { loggedFood: true });
 
   return { ok: true, data: toDTO(created) };
+}
+
+/**
+ * Edit an existing entry. Re-validated with the same schema as create; the row's
+ * `date` is preserved (the form has no date field), so the day bucket is
+ * unchanged and DailyActivity needs no re-evaluation — there's still ≥1 entry
+ * that day. Ownership is checked before the write.
+ */
+export async function updateFoodLog(
+  id: string,
+  input: FoodLogInputRaw,
+): Promise<ActionResult<FoodLogDTO>> {
+  const userId = await requireUserId();
+
+  const parsed = foodLogSchema.safeParse({
+    mealType: input.mealType,
+    foodName: input.foodName,
+    quantity: input.quantity,
+    servingSize: input.servingSize,
+    servingUnit: input.servingUnit,
+    calories: input.calories,
+    protein: input.protein,
+    carbs: input.carbs,
+    fat: input.fat,
+  });
+
+  if (!parsed.success) {
+    return { ok: false, error: firstIssue(parsed.error) };
+  }
+
+  const existing = await prisma.foodLog.findFirst({
+    where: { id, userId },
+    select: { id: true },
+  });
+  if (!existing) {
+    return { ok: false, error: "That entry no longer exists." };
+  }
+
+  const d = parsed.data;
+  const updated = await prisma.foodLog.update({
+    where: { id },
+    data: {
+      mealType: d.mealType,
+      foodName: d.foodName,
+      quantity: d.quantity,
+      servingSize: d.servingSize,
+      servingUnit: d.servingUnit,
+      calories: d.calories,
+      protein: d.protein,
+      carbs: d.carbs,
+      fat: d.fat,
+      // date intentionally unchanged — keep the entry on its original day.
+    },
+  });
+
+  return { ok: true, data: toDTO(updated) };
+}
+
+/**
+ * Delete an entry (ownership-checked). Afterwards re-evaluate the day's
+ * `loggedFood` flag: if that was the last food for the day, it flips back to
+ * false so streaks stay accurate.
+ */
+export async function deleteFoodLog(
+  id: string,
+): Promise<ActionResult<{ id: string }>> {
+  const userId = await requireUserId();
+
+  const existing = await prisma.foodLog.findFirst({
+    where: { id, userId },
+    select: { id: true, date: true },
+  });
+  if (!existing) {
+    return { ok: false, error: "That entry no longer exists." };
+  }
+
+  await prisma.foodLog.delete({ where: { id } });
+  await reevaluateLoggedFood(userId, existing.date);
+
+  return { ok: true, data: { id } };
 }

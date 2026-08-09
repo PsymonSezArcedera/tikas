@@ -1,5 +1,5 @@
 import { prisma } from "./db";
-import { dayDate } from "./day";
+import { addDays, dayDate, dayKey, dayStart } from "./day";
 
 type ActivityFlags = {
   loggedFood?: boolean;
@@ -24,4 +24,30 @@ export async function markDailyActivity(
     create: { userId, date, ...flags },
     update: { ...flags },
   });
+}
+
+/**
+ * Re-derive `loggedFood` for the app-day `when` falls in, after a food entry is
+ * removed. If no food remains for that day, flip the flag back to false so the
+ * streak stays accurate; if any remains, leave it (still true). Uses updateMany
+ * so a missing DailyActivity row is a harmless no-op — we never create an
+ * all-false row just because a delete happened.
+ */
+export async function reevaluateLoggedFood(
+  userId: string,
+  when: Date,
+): Promise<void> {
+  const key = dayKey(when);
+  const remaining = await prisma.foodLog.count({
+    where: {
+      userId,
+      date: { gte: dayStart(key), lt: dayStart(addDays(key, 1)) },
+    },
+  });
+  if (remaining === 0) {
+    await prisma.dailyActivity.updateMany({
+      where: { userId, date: dayDate(when) },
+      data: { loggedFood: false },
+    });
+  }
 }

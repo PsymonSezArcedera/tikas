@@ -36,6 +36,18 @@ export function todayKey(now: Date = new Date()): string {
   return dayKey(now);
 }
 
+/**
+ * A UTC instant that falls inside app-day `key`, at the same time-of-day as
+ * `now`. For today this is exactly `now`; for a past day it's "now, but on that
+ * date" — so a back-filled entry sorts sensibly and lands in the right day
+ * bucket. Use when creating a record dated to a chosen day rather than literally
+ * now.
+ */
+export function dayInstant(key: string, now: Date = new Date()): Date {
+  const intoDay = now.getTime() - dayStart(todayKey(now)).getTime();
+  return new Date(dayStart(key).getTime() + intoDay);
+}
+
 /** Add `n` calendar days to a day key (handles month/year rollover). */
 export function addDays(key: string, n: number): string {
   const d = new Date(`${key}T00:00:00.000Z`);

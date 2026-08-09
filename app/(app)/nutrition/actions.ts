@@ -3,7 +3,7 @@
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { markDailyActivity, reevaluateLoggedFood } from "@/lib/daily-activity";
-import { addDays, dayStart, todayKey } from "@/lib/day";
+import { addDays, dayInstant, dayStart, todayKey } from "@/lib/day";
 import { foodLogSchema } from "@/lib/validations";
 
 export type MealType = "BREAKFAST" | "LUNCH" | "DINNER" | "SNACK";
@@ -75,12 +75,25 @@ const toDTO = (r: {
   date: r.date.toISOString(),
 });
 
-/** Today's food logs (app-day, UTC+8), matching how DailyActivity buckets. */
-export async function getTodayFoodLogs(): Promise<FoodLogDTO[]> {
+// "YYYY-MM-DD" app-day key. Clamp anything else (or a future day) to today —
+// there are no future days to log or view.
+const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
+function safeDayKey(key: string): string {
+  const t = todayKey();
+  if (!DAY_KEY.test(key) || key > t) return t;
+  return key;
+}
+
+/**
+ * Food logs for a given app-day (UTC+8, matching how DailyActivity buckets).
+ * `key` is a "YYYY-MM-DD" day key; anything invalid or in the future falls back
+ * to today.
+ */
+export async function getFoodLogsForDay(key: string): Promise<FoodLogDTO[]> {
   const userId = await requireUserId();
-  const tKey = todayKey();
-  const start = dayStart(tKey);
-  const end = dayStart(addDays(tKey, 1));
+  const day = safeDayKey(key);
+  const start = dayStart(day);
+  const end = dayStart(addDays(day, 1));
 
   const rows = await prisma.foodLog.findMany({
     where: { userId, date: { gte: start, lt: end } },
@@ -89,8 +102,19 @@ export async function getTodayFoodLogs(): Promise<FoodLogDTO[]> {
   return rows.map(toDTO);
 }
 
+/** Convenience wrapper — today's food logs. */
+export async function getTodayFoodLogs(): Promise<FoodLogDTO[]> {
+  return getFoodLogsForDay(todayKey());
+}
+
+/**
+ * Create a food entry on `dayKey` (defaults to today). The entry is dated to
+ * that app-day so it appears under the right date and DailyActivity.loggedFood
+ * flips for that day — this is what lets a user back-fill a past day.
+ */
 export async function createFoodLog(
   input: FoodLogInputRaw,
+  dayKey: string = todayKey(),
 ): Promise<ActionResult<FoodLogDTO>> {
   const userId = await requireUserId();
 
@@ -104,7 +128,6 @@ export async function createFoodLog(
     protein: input.protein,
     carbs: input.carbs,
     fat: input.fat,
-    // No date field on the form — log for now.
   });
 
   if (!parsed.success) {
@@ -112,7 +135,7 @@ export async function createFoodLog(
   }
 
   const d = parsed.data;
-  const date = d.date ?? new Date();
+  const date = d.date ?? dayInstant(safeDayKey(dayKey));
 
   const created = await prisma.foodLog.create({
     data: {

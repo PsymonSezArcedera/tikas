@@ -1,10 +1,25 @@
 "use client";
 
 import * as React from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Flame, Pencil, Salad, Trash2, UtensilsCrossed } from "lucide-react";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import {
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  Flame,
+  Pencil,
+  Salad,
+  Trash2,
+  UtensilsCrossed,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { addDays } from "@/lib/day";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -25,14 +40,27 @@ import { Select } from "@/components/ui/select";
 import {
   createFoodLog,
   deleteFoodLog,
-  getTodayFoodLogs,
+  getFoodLogsForDay,
   updateFoodLog,
   type FoodLogDTO,
   type FoodLogInputRaw,
   type MealType,
 } from "./actions";
 
-const FOOD_KEY = ["foodLogs"] as const;
+// Per-day cache key. A broad ["foodLogs"] invalidation still matches every day's
+// query (partial match), so mutations refresh all cached days at once.
+const dayKey = (day: string) => ["foodLogs", day] as const;
+
+function formatDay(day: string, today: string): string {
+  if (day === today) return "Today";
+  if (day === addDays(today, -1)) return "Yesterday";
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
 
 const MEALS: { value: MealType; label: string }[] = [
   { value: "BREAKFAST", label: "Breakfast" },
@@ -106,13 +134,19 @@ const optimisticFrom = (
 
 export function NutritionClient({
   initialLogs,
+  today,
 }: {
   initialLogs: FoodLogDTO[];
+  today: string;
 }) {
   const qc = useQueryClient();
   const [meal, setMeal] = React.useState<MealType>("BREAKFAST");
   const [form, setForm] = React.useState(emptyForm);
   const [error, setError] = React.useState<string | null>(null);
+
+  // Which app-day the page is showing. Defaults to today; never goes past it.
+  const [day, setDay] = React.useState(today);
+  const isToday = day === today;
 
   // Edit dialog state.
   const [editing, setEditing] = React.useState<FoodLogDTO | null>(null);
@@ -124,49 +158,61 @@ export function NutritionClient({
   const [deleting, setDeleting] = React.useState<FoodLogDTO | null>(null);
   const [deleteError, setDeleteError] = React.useState<string | null>(null);
 
-  const { data = [] } = useQuery({
-    queryKey: FOOD_KEY,
-    queryFn: getTodayFoodLogs,
-    initialData: initialLogs,
+  const { data = [], isPlaceholderData } = useQuery({
+    queryKey: dayKey(day),
+    queryFn: () => getFoodLogsForDay(day),
+    // Seed only today's query with the server-rendered logs; other days fetch.
+    initialData: isToday ? initialLogs : undefined,
+    // Keep the previous day's list on screen (dimmed) while the new one loads,
+    // so switching days doesn't flash empty.
+    placeholderData: keepPreviousData,
   });
 
   const createMutation = useMutation({
-    mutationFn: async (input: FoodLogInputRaw) => {
-      const res = await createFoodLog(input);
+    mutationFn: async (vars: { input: FoodLogInputRaw; day: string }) => {
+      const res = await createFoodLog(vars.input, vars.day);
       if (!res.ok) throw new Error(res.error);
       return res.data;
     },
-    onMutate: async (input) => {
+    onMutate: async (vars) => {
       setError(null);
-      await qc.cancelQueries({ queryKey: FOOD_KEY });
-      const prev = qc.getQueryData<FoodLogDTO[]>(FOOD_KEY) ?? [];
+      const key = dayKey(vars.day);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<FoodLogDTO[]>(key) ?? [];
       const optimistic = optimisticFrom(
         `optimistic-${Date.now()}`,
-        input.mealType as MealType,
-        input,
-        new Date().toISOString(),
+        vars.input.mealType as MealType,
+        vars.input,
+        vars.day === today
+          ? new Date().toISOString()
+          : `${vars.day}T12:00:00.000Z`,
       );
-      qc.setQueryData<FoodLogDTO[]>(FOOD_KEY, [optimistic, ...prev]);
-      return { prev };
+      qc.setQueryData<FoodLogDTO[]>(key, [optimistic, ...prev]);
+      return { prev, key };
     },
-    onError: (err, _input, ctx) => {
-      if (ctx?.prev) qc.setQueryData(FOOD_KEY, ctx.prev);
+    onError: (err, _vars, ctx) => {
+      if (ctx) qc.setQueryData(ctx.key, ctx.prev);
       setError(err instanceof Error ? err.message : "Could not save entry");
     },
     onSuccess: () => setForm(emptyForm),
-    onSettled: () => qc.invalidateQueries({ queryKey: FOOD_KEY }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["foodLogs"] }),
   });
 
   const updateMutation = useMutation({
-    mutationFn: async (vars: { id: string; input: FoodLogInputRaw }) => {
+    mutationFn: async (vars: {
+      id: string;
+      input: FoodLogInputRaw;
+      day: string;
+    }) => {
       const res = await updateFoodLog(vars.id, vars.input);
       if (!res.ok) throw new Error(res.error);
       return res.data;
     },
     onMutate: async (vars) => {
       setEditError(null);
-      await qc.cancelQueries({ queryKey: FOOD_KEY });
-      const prev = qc.getQueryData<FoodLogDTO[]>(FOOD_KEY) ?? [];
+      const key = dayKey(vars.day);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<FoodLogDTO[]>(key) ?? [];
       const patched = optimisticFrom(
         vars.id,
         vars.input.mealType as MealType,
@@ -174,41 +220,42 @@ export function NutritionClient({
         editing?.date ?? new Date().toISOString(),
       );
       qc.setQueryData<FoodLogDTO[]>(
-        FOOD_KEY,
+        key,
         prev.map((f) => (f.id === vars.id ? patched : f)),
       );
-      return { prev };
+      return { prev, key };
     },
     onError: (err, _vars, ctx) => {
-      if (ctx?.prev) qc.setQueryData(FOOD_KEY, ctx.prev);
+      if (ctx) qc.setQueryData(ctx.key, ctx.prev);
       setEditError(err instanceof Error ? err.message : "Could not update entry");
     },
     onSuccess: () => setEditing(null),
-    onSettled: () => qc.invalidateQueries({ queryKey: FOOD_KEY }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["foodLogs"] }),
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await deleteFoodLog(id);
+    mutationFn: async (vars: { id: string; day: string }) => {
+      const res = await deleteFoodLog(vars.id);
       if (!res.ok) throw new Error(res.error);
       return res.data;
     },
-    onMutate: async (id) => {
+    onMutate: async (vars) => {
       setDeleteError(null);
-      await qc.cancelQueries({ queryKey: FOOD_KEY });
-      const prev = qc.getQueryData<FoodLogDTO[]>(FOOD_KEY) ?? [];
+      const key = dayKey(vars.day);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<FoodLogDTO[]>(key) ?? [];
       qc.setQueryData<FoodLogDTO[]>(
-        FOOD_KEY,
-        prev.filter((f) => f.id !== id),
+        key,
+        prev.filter((f) => f.id !== vars.id),
       );
-      return { prev };
+      return { prev, key };
     },
-    onError: (err, _id, ctx) => {
-      if (ctx?.prev) qc.setQueryData(FOOD_KEY, ctx.prev);
+    onError: (err, _vars, ctx) => {
+      if (ctx) qc.setQueryData(ctx.key, ctx.prev);
       setDeleteError(err instanceof Error ? err.message : "Could not delete entry");
     },
     onSuccess: () => setDeleting(null),
-    onSettled: () => qc.invalidateQueries({ queryKey: FOOD_KEY }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["foodLogs"] }),
   });
 
   const setCreate = (key: keyof FoodFormState, value: string) =>
@@ -220,7 +267,7 @@ export function NutritionClient({
     e.preventDefault();
     const err = formError(form);
     if (err) return setError(err);
-    createMutation.mutate({ mealType: meal, ...form });
+    createMutation.mutate({ input: { mealType: meal, ...form }, day });
   }
 
   function openEdit(f: FoodLogDTO) {
@@ -235,7 +282,11 @@ export function NutritionClient({
     if (!editing) return;
     const err = formError(editForm);
     if (err) return setEditError(err);
-    updateMutation.mutate({ id: editing.id, input: { mealType: editMeal, ...editForm } });
+    updateMutation.mutate({
+      id: editing.id,
+      input: { mealType: editMeal, ...editForm },
+      day,
+    });
   }
 
   function askDelete(f: FoodLogDTO) {
@@ -297,28 +348,53 @@ export function NutritionClient({
                 </p>
               )}
 
+              {!isToday && (
+                <p className="text-xs text-muted-foreground">
+                  Adding to {formatDay(day, today)}.
+                </p>
+              )}
+
               <Button
                 type="submit"
                 disabled={createMutation.isPending}
                 className="h-10"
               >
-                {createMutation.isPending ? "Saving…" : "Log food"}
+                {createMutation.isPending
+                  ? "Saving…"
+                  : isToday
+                    ? "Log food"
+                    : `Log to ${formatDay(day, today)}`}
               </Button>
             </form>
           </CardContent>
         </Card>
 
-        {/* Today summary */}
+        {/* Selected-day summary */}
         <Card>
           <CardHeader>
-            <CardTitle>Today</CardTitle>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle>{formatDay(day, today)}</CardTitle>
+              <DateNav
+                day={day}
+                today={today}
+                onChange={setDay}
+                onStep={(n) => setDay((d) => addDays(d, n))}
+              />
+            </div>
             <CardDescription>
               {data.length === 0
-                ? "Nothing logged yet."
+                ? isToday
+                  ? "Nothing logged yet."
+                  : "No food logged on this day."
                 : `${data.length} ${data.length === 1 ? "entry" : "entries"} logged.`}
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col gap-5">
+          <CardContent
+            className={cn(
+              "flex flex-col gap-5 transition-opacity",
+              isPlaceholderData && "opacity-50",
+            )}
+          >
             <DailyTotals totals={totals} />
             <MealBreakdown logs={data} onEdit={openEdit} onDelete={askDelete} />
           </CardContent>
@@ -411,7 +487,9 @@ export function NutritionClient({
               variant="destructive"
               className="h-9"
               disabled={deleteMutation.isPending}
-              onClick={() => deleting && deleteMutation.mutate(deleting.id)}
+              onClick={() =>
+                deleting && deleteMutation.mutate({ id: deleting.id, day })
+              }
             >
               {deleteMutation.isPending ? "Deleting…" : "Delete"}
             </Button>
@@ -572,6 +650,65 @@ function FoodFields({
   );
 }
 
+// Date control: prev/next arrows plus a native date picker under a styled pill.
+// "Next" is disabled on today (no future days) and the picker is capped at today.
+function DateNav({
+  day,
+  today,
+  onChange,
+  onStep,
+}: {
+  day: string;
+  today: string;
+  onChange: (day: string) => void;
+  onStep: (n: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <Button
+        type="button"
+        variant="outline"
+        size="icon-sm"
+        aria-label="Previous day"
+        onClick={() => onStep(-1)}
+      >
+        <ChevronLeft />
+      </Button>
+      <div className="relative">
+        <span className="pointer-events-none flex h-7 items-center gap-1.5 rounded-[min(var(--radius-md),12px)] border border-border bg-background px-2.5 text-[0.8rem] font-medium text-foreground dark:border-input dark:bg-input/30">
+          <CalendarDays className="size-3.5 text-muted-foreground" />
+          {formatDay(day, today)}
+        </span>
+        <input
+          type="date"
+          value={day}
+          max={today}
+          aria-label="Pick a date"
+          onChange={(e) => e.target.value && onChange(e.target.value)}
+          onClick={(e) => {
+            try {
+              e.currentTarget.showPicker?.();
+            } catch {
+              /* showPicker unsupported/blocked — the field is still usable */
+            }
+          }}
+          className="absolute inset-0 cursor-pointer opacity-0"
+        />
+      </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="icon-sm"
+        aria-label="Next day"
+        disabled={day === today}
+        onClick={() => onStep(1)}
+      >
+        <ChevronRight />
+      </Button>
+    </div>
+  );
+}
+
 function DailyTotals({
   totals,
 }: {
@@ -581,7 +718,7 @@ function DailyTotals({
     <div className="rounded-xl border border-border bg-secondary/30 p-4">
       <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
         <Flame className="size-3.5 text-primary" />
-        Calories today
+        Calories
       </div>
       <p className="mt-1 font-display text-4xl font-semibold tracking-tight">
         {round(totals.calories)}
@@ -622,8 +759,7 @@ function MealBreakdown({
   if (logs.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        Your meals will appear here, grouped by breakfast, lunch, dinner, and
-        snacks.
+        No food logged on this day.
       </p>
     );
   }

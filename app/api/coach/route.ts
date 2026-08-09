@@ -2,9 +2,15 @@ import { NextRequest } from "next/server";
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/session";
-import { streamCoachReply, type ChatTurn } from "@/lib/ai/chat";
+import {
+  generateVitaReply,
+  streamCoachReply,
+  type ChatTurn,
+} from "@/lib/ai/chat";
+import { LOG_FOOD_NAME } from "@/lib/ai/food-tool";
+import { nutritionSummary, SOURCE_LABEL } from "@/lib/food-summary";
 import { isMedicalConcern, MEDICAL_DECLINE } from "@/lib/ai/medical-guardrail";
-import { chatRequestSchema } from "@/lib/validations";
+import { chatRequestSchema, foodLogSchema } from "@/lib/validations";
 
 // Uses the Neon driver adapter (WebSocket) + Gemini, so this must run on Node.
 export const runtime = "nodejs";
@@ -26,6 +32,118 @@ function stringStream(text: string): ReadableStream<Uint8Array> {
       controller.enqueue(encoder.encode(text));
       controller.close();
     },
+  });
+}
+
+// Vita's replies come back non-streamed (we need the whole thing to detect a
+// tool call). Replay the text word-by-word so the client still reveals it like a
+// stream.
+function replayStream(text: string): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const parts = text.match(/\S+\s*/g) ?? [text];
+  return new ReadableStream({
+    async start(controller) {
+      for (const part of parts) {
+        controller.enqueue(encoder.encode(part));
+        await new Promise((r) => setTimeout(r, 12));
+      }
+      controller.close();
+    },
+  });
+}
+
+async function saveAssistant(sessionId: string, message: string) {
+  await prisma.chatMessage.create({
+    data: { sessionId, role: "ASSISTANT", message },
+  });
+}
+
+// Vita path: tool-enabled. Either proposes a food log (function call, validated,
+// returned for the user to confirm) or replies with text. Nothing is written to
+// the food diary here — the client confirms and routes through the food-logging
+// Server Action.
+async function handleVita(
+  sessionId: string,
+  turns: ChatTurn[],
+): Promise<Response> {
+  let result: Awaited<ReturnType<typeof generateVitaReply>>;
+  try {
+    result = await generateVitaReply(turns);
+  } catch (err) {
+    console.error("[coach] Vita request failed:", err);
+    return new Response(
+      "The coach is unavailable right now. Please try again in a moment.",
+      { status: 502, headers: streamHeaders(sessionId) },
+    );
+  }
+
+  const call = result.functionCalls?.find((c) => c.name === LOG_FOOD_NAME);
+  if (call) {
+    // GUARDRAIL: function-call args are untrusted model output — validate before
+    // they can ever reach the database.
+    const a = (call.args ?? {}) as Record<string, unknown>;
+    const parsed = foodLogSchema.safeParse({
+      mealType: a.mealType,
+      foodName: a.foodName,
+      quantity: a.quantity,
+      servingSize: a.servingSize,
+      servingUnit: a.servingUnit,
+      calories: a.calories,
+      protein: a.protein,
+      carbs: a.carbs,
+      fat: a.fat,
+    });
+
+    if (!parsed.success) {
+      const say =
+        "I couldn't put together a valid entry from that — tell me the food and roughly how much, and I'll try again.";
+      await saveAssistant(sessionId, say);
+      return new Response(stringStream(say), {
+        headers: { ...streamHeaders(sessionId), "X-Coach-Response": "text" },
+      });
+    }
+
+    const d = parsed.data;
+    const proposal = {
+      foodName: d.foodName,
+      mealType: d.mealType,
+      quantity: d.quantity,
+      servingSize: d.servingSize,
+      servingUnit: d.servingUnit,
+      calories: d.calories,
+      protein: d.protein,
+      carbs: d.carbs,
+      fat: d.fat,
+      // Everything the model proposes is an estimate. When Open Food Facts
+      // lookup lands, matched entries will set this to "off" instead.
+      source: "estimate" as const,
+    };
+    // Vita says the nutrition conversationally, then the card renders below with
+    // just the editable fields. Built from the validated values, so it matches.
+    const say = `${nutritionSummary(d)} Here's what I'll log — check the numbers and confirm, or tweak them first.`;
+    const sourceLabel = SOURCE_LABEL[proposal.source];
+    // Persist the same words the bubble shows, including the source line, so
+    // reopening the session reads identically (the confirm card is session-only).
+    await saveAssistant(sessionId, `${say}\n\n${sourceLabel}`);
+
+    return Response.json(
+      { say, proposal },
+      {
+        headers: {
+          "X-Session-Id": sessionId,
+          "X-Coach-Response": "proposal",
+          "Cache-Control": "no-store",
+        },
+      },
+    );
+  }
+
+  const text =
+    result.text?.trim() ||
+    "I'm not sure how to help with that — could you rephrase?";
+  await saveAssistant(sessionId, text);
+  return new Response(replayStream(text), {
+    headers: { ...streamHeaders(sessionId), "X-Coach-Response": "text" },
   });
 }
 
@@ -101,6 +219,11 @@ export async function POST(req: NextRequest) {
     role: m.role,
     content: m.message,
   }));
+
+  // Vita is agentic (logFood tool) — handled on its own path.
+  if (coach === "VITA") {
+    return handleVita(chatSessionId, turns);
+  }
 
   let geminiStream: Awaited<ReturnType<typeof streamCoachReply>>;
   try {

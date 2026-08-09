@@ -4,9 +4,9 @@ import { redirect } from "next/navigation";
 import { getSession } from "@/lib/session";
 import { getLatestCoachThread } from "@/lib/chat";
 import { COACHES } from "@/lib/ai/coaches";
-import { CoachChatDrawer } from "@/components/coach-chat";
 import { getTodayFoodLogs } from "./actions";
 import { NutritionClient } from "./nutrition-client";
+import { VitaChatDrawer } from "./vita-chat-drawer";
 
 export const metadata: Metadata = { title: "Nutrition" };
 
@@ -28,8 +28,7 @@ export default async function NutritionPage() {
   return (
     <>
       <NutritionClient initialLogs={initialLogs} />
-      <CoachChatDrawer
-        coachId="VITA"
+      <VitaChatDrawer
         coachName={COACHES.VITA.name}
         coachTitle={COACHES.VITA.title}
         initialSessionId={thread.sessionId}

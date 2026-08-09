@@ -3,10 +3,19 @@
 import * as React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Dumbbell, Salad, Send, ShieldAlert, Sparkles, X } from "lucide-react";
+import {
+  Check,
+  Dumbbell,
+  Salad,
+  Send,
+  ShieldAlert,
+  Sparkles,
+  X,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import type { CoachId } from "@/lib/ai/coaches";
+import { SOURCE_LABEL, type FoodSource } from "@/lib/food-summary";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -49,12 +58,32 @@ const COACH_UI: Record<
   },
 };
 
+// A food-log proposal from Vita's logFood tool — validated server-side, shown
+// here for the user to confirm or correct before it's written.
+export type FoodProposal = {
+  foodName: string;
+  mealType: "BREAKFAST" | "LUNCH" | "DINNER" | "SNACK";
+  quantity: number;
+  servingSize: number;
+  servingUnit: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  source: FoodSource;
+};
+
+export type ConfirmProposal = (
+  proposal: FoodProposal,
+) => Promise<{ ok: boolean; message: string }>;
+
 type ChatMessage = {
   id: string;
   role: "USER" | "ASSISTANT";
   content: string;
   streaming?: boolean;
   error?: boolean;
+  proposal?: FoodProposal;
 };
 
 let tmpCounter = 0;
@@ -67,7 +96,11 @@ export function CoachChat({
   initialSessionId,
   initialMessages,
   headerAction,
-}: CoachProps & { headerAction?: React.ReactNode }) {
+  onConfirmProposal,
+}: CoachProps & {
+  headerAction?: React.ReactNode;
+  onConfirmProposal?: ConfirmProposal;
+}) {
   const [messages, setMessages] = React.useState<ChatMessage[]>(initialMessages);
   const [input, setInput] = React.useState("");
   const [sessionId, setSessionId] = React.useState<string | null>(
@@ -123,11 +156,23 @@ export function CoachChat({
       const sid = res.headers.get("X-Session-Id");
       if (sid) setSessionId(sid);
 
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
         const detail = await res.text().catch(() => "");
         throw new Error(detail || "Request failed");
       }
 
+      // Vita proposed a food log — render the confirm card instead of streaming.
+      if (res.headers.get("X-Coach-Response") === "proposal") {
+        const data = (await res.json()) as { say: string; proposal: FoodProposal };
+        patchLast({
+          streaming: false,
+          content: data.say,
+          proposal: data.proposal,
+        });
+        return;
+      }
+
+      if (!res.body) throw new Error("No response body");
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let acc = "";
@@ -189,9 +234,19 @@ export function CoachChat({
           </div>
         ) : (
           <div className="flex flex-col gap-4">
-            {messages.map((m) => (
-              <MessageBubble key={m.id} message={m} coachName={coachName} />
-            ))}
+            {messages.map((m) =>
+              m.proposal ? (
+                <ProposalMessage
+                  key={m.id}
+                  say={m.content}
+                  proposal={m.proposal}
+                  coachName={coachName}
+                  onConfirm={onConfirmProposal}
+                />
+              ) : (
+                <MessageBubble key={m.id} message={m} coachName={coachName} />
+              ),
+            )}
           </div>
         )}
       </div>
@@ -243,7 +298,9 @@ export function CoachChat({
  * keeps the CoachChat alive across open/close so an in-session conversation
  * isn't lost. The coach shown follows coachId — the page passes the right one.
  */
-export function CoachChatDrawer(props: CoachProps) {
+export function CoachChatDrawer(
+  props: CoachProps & { onConfirmProposal?: ConfirmProposal },
+) {
   const CoachIcon = COACH_UI[props.coachId].icon;
   return (
     <Sheet>
@@ -353,3 +410,241 @@ const CoachMarkdown = React.memo(function CoachMarkdown({
     </div>
   );
 });
+
+const MEAL_TYPES: FoodProposal["mealType"][] = [
+  "BREAKFAST",
+  "LUNCH",
+  "DINNER",
+  "SNACK",
+];
+
+type ProposalStatus = "idle" | "saving" | "logged" | "declined" | "error";
+
+// Vita's food-log proposal: an editable confirm card. Nothing is written until
+// the user hits Confirm — that routes through onConfirm (the food-logging Server
+// Action). The values are pre-filled from the model's estimate and fully editable
+// so the user can correct a bad guess before it's saved.
+function ProposalMessage({
+  say,
+  proposal,
+  coachName,
+  onConfirm,
+}: {
+  say: string;
+  proposal: FoodProposal;
+  coachName: string;
+  onConfirm?: ConfirmProposal;
+}) {
+  const [draft, setDraft] = React.useState<FoodProposal>(proposal);
+  const [status, setStatus] = React.useState<ProposalStatus>("idle");
+  const [note, setNote] = React.useState("");
+
+  const locked = status === "saving" || status === "logged" || status === "declined";
+
+  function setNum(key: keyof FoodProposal, raw: string) {
+    const n = Number(raw);
+    setDraft((prev) => ({ ...prev, [key]: Number.isFinite(n) ? n : 0 }));
+  }
+
+  async function confirm() {
+    if (!onConfirm) return;
+    setStatus("saving");
+    setNote("");
+    try {
+      const res = await onConfirm(draft);
+      if (res.ok) {
+        setStatus("logged");
+        setNote(res.message);
+      } else {
+        setStatus("error");
+        setNote(res.message);
+      }
+    } catch {
+      setStatus("error");
+      setNote("Something went wrong logging that. Please try again.");
+    }
+  }
+
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] rounded-2xl bg-secondary px-4 py-2.5 text-sm text-foreground">
+        <p className="mb-1 text-xs font-medium text-muted-foreground">
+          {coachName}
+        </p>
+        {/* Vita says the nutrition conversationally; the card below is just the
+            editable fields. The source label stays honest, keyed off the
+            structured source so it can become "Open Food Facts" later. */}
+        <p className="mb-1 whitespace-pre-wrap">{say}</p>
+        <p className="mb-3 text-xs text-muted-foreground">
+          {SOURCE_LABEL[proposal.source]}
+        </p>
+
+        <div className="rounded-xl border border-border bg-background/50 p-3">
+          <label className="block text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
+            Food
+          </label>
+          <input
+            type="text"
+            value={draft.foodName}
+            disabled={locked}
+            onChange={(e) =>
+              setDraft((prev) => ({ ...prev, foodName: e.target.value }))
+            }
+            className={PROPOSAL_INPUT}
+          />
+
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <div>
+              <label className={PROPOSAL_LABEL}>Meal</label>
+              <select
+                value={draft.mealType}
+                disabled={locked}
+                onChange={(e) =>
+                  setDraft((prev) => ({
+                    ...prev,
+                    mealType: e.target.value as FoodProposal["mealType"],
+                  }))
+                }
+                className={PROPOSAL_INPUT}
+              >
+                {MEAL_TYPES.map((m) => (
+                  <option key={m} value={m}>
+                    {m.charAt(0) + m.slice(1).toLowerCase()}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={PROPOSAL_LABEL}>Servings</label>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={draft.quantity}
+                disabled={locked}
+                onChange={(e) => setNum("quantity", e.target.value)}
+                className={PROPOSAL_INPUT}
+              />
+            </div>
+            <div>
+              <label className={PROPOSAL_LABEL}>Serving size</label>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={draft.servingSize}
+                disabled={locked}
+                onChange={(e) => setNum("servingSize", e.target.value)}
+                className={PROPOSAL_INPUT}
+              />
+            </div>
+            <div>
+              <label className={PROPOSAL_LABEL}>Unit</label>
+              <input
+                type="text"
+                value={draft.servingUnit}
+                disabled={locked}
+                onChange={(e) =>
+                  setDraft((prev) => ({ ...prev, servingUnit: e.target.value }))
+                }
+                className={PROPOSAL_INPUT}
+              />
+            </div>
+          </div>
+
+          <div className="mt-2">
+            <label className={PROPOSAL_LABEL}>Calories</label>
+            <input
+              type="number"
+              inputMode="decimal"
+              value={draft.calories}
+              disabled={locked}
+              onChange={(e) => setNum("calories", e.target.value)}
+              className={PROPOSAL_INPUT}
+            />
+          </div>
+
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            <div>
+              <label className={PROPOSAL_LABEL}>Protein (g)</label>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={draft.protein}
+                disabled={locked}
+                onChange={(e) => setNum("protein", e.target.value)}
+                className={PROPOSAL_INPUT}
+              />
+            </div>
+            <div>
+              <label className={PROPOSAL_LABEL}>Carbs (g)</label>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={draft.carbs}
+                disabled={locked}
+                onChange={(e) => setNum("carbs", e.target.value)}
+                className={PROPOSAL_INPUT}
+              />
+            </div>
+            <div>
+              <label className={PROPOSAL_LABEL}>Fat (g)</label>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={draft.fat}
+                disabled={locked}
+                onChange={(e) => setNum("fat", e.target.value)}
+                className={PROPOSAL_INPUT}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Actions / outcome */}
+        {status === "logged" ? (
+          <p className="mt-3 flex items-center gap-1.5 text-xs font-medium text-success">
+            <Check className="size-3.5" />
+            {note || "Logged to your diary."}
+          </p>
+        ) : status === "declined" ? (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Okay — nothing logged.
+          </p>
+        ) : (
+          <div className="mt-3">
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                size="sm"
+                className="h-8"
+                onClick={() => void confirm()}
+                disabled={status === "saving" || !onConfirm}
+              >
+                {status === "saving" ? "Logging…" : "Confirm & log"}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8"
+                onClick={() => setStatus("declined")}
+                disabled={status === "saving"}
+              >
+                Decline
+              </Button>
+            </div>
+            {status === "error" && (
+              <p className="mt-2 text-xs text-destructive" role="alert">
+                {note}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const PROPOSAL_LABEL =
+  "block text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground";
+const PROPOSAL_INPUT =
+  "mt-0.5 w-full rounded-md border border-input bg-transparent px-2 py-1 text-sm outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/40 disabled:opacity-70 dark:bg-input/30";

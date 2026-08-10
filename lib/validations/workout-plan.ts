@@ -81,3 +81,25 @@ export const aiWorkoutPlanSchema = z.object({
 });
 
 export type AiWorkoutPlan = z.infer<typeof aiWorkoutPlanSchema>;
+
+/**
+ * Manual edit of a stored plan's metadata. Goal/intensity reuse the same option
+ * lists as generation; duration reuses the session-length bounds.
+ */
+export const workoutPlanMetaSchema = z.object({
+  title: z.string().trim().min(1).max(120),
+  goal: z.enum(WORKOUT_GOALS),
+  intensity: z.enum(INTENSITIES),
+  duration: z.coerce.number().int().min(15).max(180),
+});
+
+export type WorkoutPlanMeta = z.infer<typeof workoutPlanMetaSchema>;
+
+/**
+ * Manual edit of a single exercise: the generated shape minus `day` (the day is
+ * the grouping, set when the exercise is added, not edited here). reps stays a
+ * string for ranges ("8-12") and "AMRAP".
+ */
+export const exerciseEditSchema = aiExerciseSchema.omit({ day: true });
+
+export type ExerciseEdit = z.infer<typeof exerciseEditSchema>;

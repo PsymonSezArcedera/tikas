@@ -3,7 +3,32 @@
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { generateWorkoutPlanJSON } from "@/lib/ai/workout";
-import { aiWorkoutPlanSchema, workoutPlanRequestSchema } from "@/lib/validations";
+import {
+  aiExerciseSchema,
+  aiWorkoutPlanSchema,
+  exerciseEditSchema,
+  workoutPlanMetaSchema,
+  workoutPlanRequestSchema,
+} from "@/lib/validations";
+
+export type ActionResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string };
+
+export type ExerciseInputRaw = {
+  exercise: string;
+  sets: string;
+  reps: string;
+  rest: string;
+  notes: string;
+};
+export type AddExerciseInputRaw = ExerciseInputRaw & { day: string };
+export type PlanMetaInputRaw = {
+  title: string;
+  goal: string;
+  intensity: string;
+  duration: string;
+};
 
 export type ExerciseDTO = {
   id: string;
@@ -66,15 +91,221 @@ function toPlanDTO(plan: {
   };
 }
 
+// Exercises are ordered by id: cuids are creation-ordered, so a plan's original
+// exercises keep their generated order and newly added ones land after the
+// existing ones within their day.
+const withExercises = {
+  exercises: { orderBy: { id: "asc" } },
+} as const;
+
+const firstIssue = (e: { issues: { message: string }[] }) =>
+  e.issues[0]?.message ?? "Please check your entries.";
+
+const toExerciseDTO = (e: {
+  id: string;
+  day: string;
+  exercise: string;
+  sets: number;
+  reps: string;
+  rest: string;
+  notes: string | null;
+}): ExerciseDTO => ({
+  id: e.id,
+  day: e.day,
+  exercise: e.exercise,
+  sets: e.sets,
+  reps: e.reps,
+  rest: e.rest,
+  notes: e.notes,
+});
+
+async function requireUserId(): Promise<string> {
+  const session = await getSession();
+  if (!session) throw new Error("Not authenticated");
+  return session.user.id;
+}
+
 export async function getLatestPlan(): Promise<PlanDTO | null> {
   const session = await getSession();
   if (!session) return null;
   const plan = await prisma.workoutPlan.findFirst({
     where: { userId: session.user.id },
     orderBy: { createdAt: "desc" },
-    include: { exercises: true },
+    include: withExercises,
   });
   return plan ? toPlanDTO(plan) : null;
+}
+
+/** Edit plan metadata (title, goal, intensity, duration). Ownership-checked. */
+export async function updatePlanMeta(
+  planId: string,
+  input: PlanMetaInputRaw,
+): Promise<ActionResult<PlanDTO>> {
+  const userId = await requireUserId();
+
+  const parsed = workoutPlanMetaSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) };
+
+  const owned = await prisma.workoutPlan.findFirst({
+    where: { id: planId, userId },
+    select: { id: true },
+  });
+  if (!owned) return { ok: false, error: "That plan no longer exists." };
+
+  const updated = await prisma.workoutPlan.update({
+    where: { id: planId },
+    data: {
+      title: parsed.data.title,
+      goal: parsed.data.goal,
+      intensity: parsed.data.intensity,
+      duration: parsed.data.duration,
+      // updatedAt bumps automatically (@updatedAt).
+    },
+    include: withExercises,
+  });
+  return { ok: true, data: toPlanDTO(updated) };
+}
+
+/** Edit one exercise (name, sets, reps, rest, notes). Ownership via its plan. */
+export async function updateExercise(
+  id: string,
+  input: ExerciseInputRaw,
+): Promise<ActionResult<ExerciseDTO>> {
+  const userId = await requireUserId();
+
+  const parsed = exerciseEditSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) };
+
+  const ex = await prisma.exercise.findFirst({
+    where: { id, plan: { userId } },
+    select: { id: true, planId: true },
+  });
+  if (!ex) return { ok: false, error: "That exercise no longer exists." };
+
+  // Atomic: update the row and bump the parent plan's updatedAt together.
+  const [updated] = await prisma.$transaction([
+    prisma.exercise.update({
+      where: { id },
+      data: {
+        exercise: parsed.data.exercise,
+        sets: parsed.data.sets,
+        reps: parsed.data.reps,
+        rest: parsed.data.rest,
+        notes: parsed.data.notes,
+      },
+    }),
+    prisma.workoutPlan.update({
+      where: { id: ex.planId },
+      data: { updatedAt: new Date() },
+    }),
+  ]);
+  return { ok: true, data: toExerciseDTO(updated) };
+}
+
+/** Add an exercise to a day of a plan. Ownership-checked. */
+export async function addExercise(
+  planId: string,
+  input: AddExerciseInputRaw,
+): Promise<ActionResult<ExerciseDTO>> {
+  const userId = await requireUserId();
+
+  const parsed = aiExerciseSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) };
+
+  const owned = await prisma.workoutPlan.findFirst({
+    where: { id: planId, userId },
+    select: { id: true },
+  });
+  if (!owned) return { ok: false, error: "That plan no longer exists." };
+
+  const [created] = await prisma.$transaction([
+    prisma.exercise.create({
+      data: {
+        planId,
+        day: parsed.data.day,
+        exercise: parsed.data.exercise,
+        sets: parsed.data.sets,
+        reps: parsed.data.reps,
+        rest: parsed.data.rest,
+        notes: parsed.data.notes,
+      },
+    }),
+    prisma.workoutPlan.update({
+      where: { id: planId },
+      data: { updatedAt: new Date() },
+    }),
+  ]);
+  return { ok: true, data: toExerciseDTO(created) };
+}
+
+/** Delete one exercise. Ownership via its plan. */
+export async function deleteExercise(
+  id: string,
+): Promise<ActionResult<{ id: string }>> {
+  const userId = await requireUserId();
+
+  const ex = await prisma.exercise.findFirst({
+    where: { id, plan: { userId } },
+    select: { id: true, planId: true },
+  });
+  if (!ex) return { ok: false, error: "That exercise no longer exists." };
+
+  await prisma.$transaction([
+    prisma.exercise.delete({ where: { id } }),
+    prisma.workoutPlan.update({
+      where: { id: ex.planId },
+      data: { updatedAt: new Date() },
+    }),
+  ]);
+  return { ok: true, data: { id } };
+}
+
+/**
+ * Delete a whole day of exercises. Atomic: removes the day's exercises and
+ * recomputes the plan's `days` count in one transaction, so the badge stays
+ * accurate and the update bumps updatedAt.
+ */
+export async function deleteDay(
+  planId: string,
+  day: string,
+): Promise<ActionResult<{ day: string }>> {
+  const userId = await requireUserId();
+
+  const owned = await prisma.workoutPlan.findFirst({
+    where: { id: planId, userId },
+    select: { id: true },
+  });
+  if (!owned) return { ok: false, error: "That plan no longer exists." };
+
+  await prisma.$transaction(async (tx) => {
+    await tx.exercise.deleteMany({ where: { planId, day } });
+    const remaining = await tx.exercise.findMany({
+      where: { planId },
+      select: { day: true },
+      distinct: ["day"],
+    });
+    await tx.workoutPlan.update({
+      where: { id: planId },
+      data: { days: remaining.length },
+    });
+  });
+  return { ok: true, data: { day } };
+}
+
+/** Delete an entire plan (cascade removes its exercises). Ownership-checked. */
+export async function deletePlan(
+  planId: string,
+): Promise<ActionResult<{ id: string }>> {
+  const userId = await requireUserId();
+
+  const owned = await prisma.workoutPlan.findFirst({
+    where: { id: planId, userId },
+    select: { id: true },
+  });
+  if (!owned) return { ok: false, error: "That plan no longer exists." };
+
+  await prisma.workoutPlan.delete({ where: { id: planId } });
+  return { ok: true, data: { id: planId } };
 }
 
 export async function generatePlan(
@@ -151,7 +382,7 @@ export async function generatePlan(
           })),
         },
       },
-      include: { exercises: true },
+      include: withExercises,
     });
     return { plan: toPlanDTO(created) };
   } catch (err) {

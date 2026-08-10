@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DateNav, formatDay } from "@/components/date-nav";
 import {
   createBodyMeasurement,
@@ -420,7 +421,7 @@ function WeightCard({
         </DialogContent>
       </Dialog>
 
-      <DeleteDialog
+      <ConfirmDialog
         open={deleting !== null}
         onClose={() => setDeleting(null)}
         onConfirm={() =>
@@ -428,10 +429,14 @@ function WeightCard({
         }
         pending={deleteMutation.isPending}
         error={deleteError}
-        label={
-          deleting
-            ? `${kgToDisplay(deleting.weight, unit)} ${wlabel} weigh-in`
-            : "this entry"
+        description={
+          <>
+            Remove{" "}
+            {deleting
+              ? `${kgToDisplay(deleting.weight, unit)} ${wlabel} weigh-in`
+              : "this entry"}{" "}
+            from this day? This can&apos;t be undone.
+          </>
         }
       />
     </Card>
@@ -750,7 +755,7 @@ function BodyCard({
         </DialogContent>
       </Dialog>
 
-      <DeleteDialog
+      <ConfirmDialog
         open={deleting !== null}
         onClose={() => setDeleting(null)}
         onConfirm={() =>
@@ -758,7 +763,7 @@ function BodyCard({
         }
         pending={deleteMutation.isPending}
         error={deleteError}
-        label="these measurements"
+        description={<>Remove these measurements from this day? This can&apos;t be undone.</>}
       />
     </Card>
   );
@@ -830,61 +835,5 @@ function DayEntryList<T extends { id: string }>({
         );
       })}
     </ul>
-  );
-}
-
-// Small on-brand delete confirm, shared by both cards.
-function DeleteDialog({
-  open,
-  onClose,
-  onConfirm,
-  pending,
-  error,
-  label,
-}: {
-  open: boolean;
-  onClose: () => void;
-  onConfirm: () => void;
-  pending: boolean;
-  error: string | null;
-  label: string;
-}) {
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        if (!o) onClose();
-      }}
-    >
-      <DialogContent className="max-w-sm">
-        <DialogTitle className="font-display text-lg font-semibold tracking-tight">
-          Delete entry?
-        </DialogTitle>
-        <DialogDescription className="mt-1 text-sm text-muted-foreground">
-          Remove {label} from this day? This can&apos;t be undone.
-        </DialogDescription>
-
-        {error && (
-          <p className="mt-3 text-sm text-destructive" role="alert">
-            {error}
-          </p>
-        )}
-
-        <div className="mt-5 flex justify-end gap-2">
-          <Button type="button" variant="outline" className="h-9" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            variant="destructive"
-            className="h-9"
-            disabled={pending}
-            onClick={onConfirm}
-          >
-            {pending ? "Deleting…" : "Delete"}
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }

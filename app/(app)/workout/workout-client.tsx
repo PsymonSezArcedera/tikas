@@ -1,6 +1,8 @@
 "use client";
 
+import * as React from "react";
 import { useActionState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Dumbbell, Sparkles } from "lucide-react";
 
 import {
@@ -19,8 +21,13 @@ import {
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { generatePlan, type GenerateState, type PlanDTO } from "./actions";
-import { PlanView } from "./plan-view";
+import {
+  generatePlan,
+  getLatestPlan,
+  type GenerateState,
+  type PlanDTO,
+} from "./actions";
+import { PlanView, PLAN_KEY } from "./plan-view";
 
 const DEFAULT_EQUIPMENT = new Set(["Bodyweight", "Dumbbells"]);
 const DEFAULT_FOCUS = new Set(["Full body"]);
@@ -32,13 +39,24 @@ const segment =
   "flex cursor-pointer items-center justify-center rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground peer-checked:bg-background peer-checked:text-foreground peer-checked:shadow-sm";
 
 export function WorkoutClient({ initialPlan }: { initialPlan: PlanDTO | null }) {
+  const qc = useQueryClient();
   const [state, formAction, pending] = useActionState<GenerateState, FormData>(
     generatePlan,
     {},
   );
 
-  // Show the freshly generated plan, else the most recent stored one.
-  const plan = state.plan ?? initialPlan;
+  // The displayed plan is cache-backed so inline edits (add/edit/delete) update
+  // it optimistically. The server-rendered plan seeds the cache.
+  const { data: plan } = useQuery({
+    queryKey: PLAN_KEY,
+    queryFn: getLatestPlan,
+    initialData: initialPlan,
+  });
+
+  // A freshly generated plan (from the form action) becomes the displayed plan.
+  React.useEffect(() => {
+    if (state.plan) qc.setQueryData(PLAN_KEY, state.plan);
+  }, [state.plan, qc]);
 
   return (
     <div className="flex flex-col gap-6">

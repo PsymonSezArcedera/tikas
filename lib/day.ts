@@ -48,6 +48,18 @@ export function dayInstant(key: string, now: Date = new Date()): Date {
   return new Date(dayStart(key).getTime() + intoDay);
 }
 
+const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * A trusted app-day key. Anything malformed or in the future is clamped to
+ * today — there are no future days to log or view. Used at the Server Action
+ * boundary before a client-supplied key builds a date range.
+ */
+export function safeDayKey(key: string, now: Date = new Date()): string {
+  const t = todayKey(now);
+  return DAY_KEY_RE.test(key) && key <= t ? key : t;
+}
+
 /** Add `n` calendar days to a day key (handles month/year rollover). */
 export function addDays(key: string, n: number): string {
   const d = new Date(`${key}T00:00:00.000Z`);

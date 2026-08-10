@@ -3,7 +3,7 @@
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { markDailyActivity, reevaluateLoggedFood } from "@/lib/daily-activity";
-import { addDays, dayInstant, dayStart, todayKey } from "@/lib/day";
+import { addDays, dayInstant, dayStart, safeDayKey, todayKey } from "@/lib/day";
 import { foodLogSchema } from "@/lib/validations";
 
 export type MealType = "BREAKFAST" | "LUNCH" | "DINNER" | "SNACK";
@@ -74,15 +74,6 @@ const toDTO = (r: {
   fat: r.fat,
   date: r.date.toISOString(),
 });
-
-// "YYYY-MM-DD" app-day key. Clamp anything else (or a future day) to today —
-// there are no future days to log or view.
-const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
-function safeDayKey(key: string): string {
-  const t = todayKey();
-  if (!DAY_KEY.test(key) || key > t) return t;
-  return key;
-}
 
 /**
  * Food logs for a given app-day (UTC+8, matching how DailyActivity buckets).

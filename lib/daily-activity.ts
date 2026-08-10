@@ -27,27 +27,52 @@ export async function markDailyActivity(
 }
 
 /**
- * Re-derive `loggedFood` for the app-day `when` falls in, after a food entry is
- * removed. If no food remains for that day, flip the flag back to false so the
- * streak stays accurate; if any remains, leave it (still true). Uses updateMany
- * so a missing DailyActivity row is a harmless no-op — we never create an
- * all-false row just because a delete happened.
+ * After a delete, re-derive a streak flag for the entry's app-day: if no entries
+ * of that kind remain for the day, flip the flag back to false so the streak
+ * stays accurate; if any remain, leave it (still true). `countRemaining` is the
+ * per-model day count. Uses updateMany so a missing DailyActivity row is a
+ * harmless no-op — we never create an all-false row just because of a delete.
  */
-export async function reevaluateLoggedFood(
+async function reevaluateFlag(
   userId: string,
   when: Date,
+  countRemaining: (range: { gte: Date; lt: Date }) => Promise<number>,
+  flag: ActivityFlags,
 ): Promise<void> {
   const key = dayKey(when);
-  const remaining = await prisma.foodLog.count({
-    where: {
-      userId,
-      date: { gte: dayStart(key), lt: dayStart(addDays(key, 1)) },
-    },
+  const remaining = await countRemaining({
+    gte: dayStart(key),
+    lt: dayStart(addDays(key, 1)),
   });
   if (remaining === 0) {
     await prisma.dailyActivity.updateMany({
       where: { userId, date: dayDate(when) },
-      data: { loggedFood: false },
+      data: flag,
     });
   }
+}
+
+/** Re-derive `loggedFood` for the entry's day after a food-log delete. */
+export function reevaluateLoggedFood(userId: string, when: Date): Promise<void> {
+  return reevaluateFlag(
+    userId,
+    when,
+    ({ gte, lt }) =>
+      prisma.foodLog.count({ where: { userId, date: { gte, lt } } }),
+    { loggedFood: false },
+  );
+}
+
+/** Re-derive `loggedWeight` for the entry's day after a weight-log delete. */
+export function reevaluateLoggedWeight(
+  userId: string,
+  when: Date,
+): Promise<void> {
+  return reevaluateFlag(
+    userId,
+    when,
+    ({ gte, lt }) =>
+      prisma.weightLog.count({ where: { userId, date: { gte, lt } } }),
+    { loggedWeight: false },
+  );
 }

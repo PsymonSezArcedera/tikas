@@ -1,8 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { LineChart, Ruler, Scale } from "lucide-react";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { LineChart, Pencil, Ruler, Scale, Trash2 } from "lucide-react";
 
 import {
   cmToDisplay,
@@ -13,6 +18,7 @@ import {
   weightUnitLabel,
   type Unit,
 } from "@/lib/units";
+import { addDays } from "@/lib/day";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,40 +28,45 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { DateNav, formatDay } from "@/components/date-nav";
 import {
   createBodyMeasurement,
   createWeightLog,
-  getBodyMeasurements,
-  getWeightLogs,
+  deleteBodyMeasurement,
+  deleteWeightLog,
+  getBodyMeasurementsForDay,
+  getWeightLogsForDay,
+  updateBodyMeasurement,
+  updateWeightLog,
   type BodyMeasurementDTO,
   type WeightLogDTO,
 } from "./actions";
 
-const WEIGHT_KEY = ["weightLogs"] as const;
-const BODY_KEY = ["bodyMeasurements"] as const;
+// Per-day cache keys. A broad ["weightLogs"] / ["bodyMeasurements"] invalidation
+// still matches every day's query (partial match), so mutations refresh all
+// cached days at once.
+const weightKey = (day: string) => ["weightLogs", day] as const;
+const bodyKey = (day: string) => ["bodyMeasurements", day] as const;
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
-const isOptimistic = (id: string) => id.startsWith("optimistic-");
-
-// Fixed locale + UTC so server and client render the same string (no hydration
-// mismatch), and the calendar day matches how it's stored.
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
+const msg = (e: unknown, fallback: string) =>
+  e instanceof Error ? e.message : fallback;
 
 export function TrackingClient({
   unit,
+  today,
   initialWeightLogs,
   initialMeasurements,
 }: {
   unit: Unit;
+  today: string;
   initialWeightLogs: WeightLogDTO[];
   initialMeasurements: BodyMeasurementDTO[];
 }) {
@@ -77,8 +88,8 @@ export function TrackingClient({
       </header>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <WeightCard unit={unit} initialData={initialWeightLogs} />
-        <BodyCard unit={unit} initialData={initialMeasurements} />
+        <WeightCard unit={unit} today={today} initialData={initialWeightLogs} />
+        <BodyCard unit={unit} today={today} initialData={initialMeasurements} />
       </div>
     </div>
   );
@@ -86,129 +97,209 @@ export function TrackingClient({
 
 /* ------------------------------- Weight ---------------------------------- */
 
+type WeightForm = { weight: string; bodyFat: string };
+const emptyWeight: WeightForm = { weight: "", bodyFat: "" };
+
 function WeightCard({
   unit,
+  today,
   initialData,
 }: {
   unit: Unit;
+  today: string;
   initialData: WeightLogDTO[];
 }) {
   const qc = useQueryClient();
-  const [weight, setWeight] = React.useState("");
-  const [bodyFat, setBodyFat] = React.useState("");
-  const [date, setDate] = React.useState(todayISO);
+  const [day, setDay] = React.useState(today);
+  const isToday = day === today;
+  const [form, setForm] = React.useState(emptyWeight);
   const [error, setError] = React.useState<string | null>(null);
 
-  const { data = [] } = useQuery({
-    queryKey: WEIGHT_KEY,
-    queryFn: getWeightLogs,
-    initialData,
+  const [editing, setEditing] = React.useState<WeightLogDTO | null>(null);
+  const [editForm, setEditForm] = React.useState(emptyWeight);
+  const [editError, setEditError] = React.useState<string | null>(null);
+
+  const [deleting, setDeleting] = React.useState<WeightLogDTO | null>(null);
+  const [deleteError, setDeleteError] = React.useState<string | null>(null);
+
+  const { data = [], isPlaceholderData } = useQuery({
+    queryKey: weightKey(day),
+    queryFn: () => getWeightLogsForDay(day),
+    initialData: isToday ? initialData : undefined,
+    placeholderData: keepPreviousData,
   });
 
-  const mutation = useMutation({
-    mutationFn: async (input: {
-      weight: string;
-      bodyFat?: string;
-      date?: string;
-    }) => {
-      const res = await createWeightLog(input);
+  const wlabel = weightUnitLabel(unit);
+
+  const optimistic = (id: string, f: WeightForm, d: string): WeightLogDTO => ({
+    id,
+    weight: displayToKg(Number(f.weight), unit),
+    bodyFat: f.bodyFat.trim() ? Number(f.bodyFat) : null,
+    date: d === today ? new Date().toISOString() : `${d}T12:00:00.000Z`,
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async (vars: { input: WeightForm; day: string }) => {
+      const res = await createWeightLog(vars.input, vars.day);
       if (!res.ok) throw new Error(res.error);
       return res.data;
     },
-    onMutate: async (input) => {
+    onMutate: async (vars) => {
       setError(null);
-      await qc.cancelQueries({ queryKey: WEIGHT_KEY });
-      const prev = qc.getQueryData<WeightLogDTO[]>(WEIGHT_KEY) ?? [];
-      const optimistic: WeightLogDTO = {
-        id: `optimistic-${Date.now()}`,
-        weight: displayToKg(Number(input.weight), unit),
-        bodyFat: input.bodyFat ? Number(input.bodyFat) : null,
-        date: new Date(input.date ? input.date : todayISO()).toISOString(),
+      const key = weightKey(vars.day);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<WeightLogDTO[]>(key) ?? [];
+      qc.setQueryData<WeightLogDTO[]>(key, [
+        optimistic(`optimistic-${Date.now()}`, vars.input, vars.day),
+        ...prev,
+      ]);
+      return { prev, key };
+    },
+    onError: (err, _v, ctx) => {
+      if (ctx) qc.setQueryData(ctx.key, ctx.prev);
+      setError(msg(err, "Could not save entry"));
+    },
+    onSuccess: () => setForm(emptyWeight),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["weightLogs"] }),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async (vars: { id: string; input: WeightForm; day: string }) => {
+      const res = await updateWeightLog(vars.id, vars.input);
+      if (!res.ok) throw new Error(res.error);
+      return res.data;
+    },
+    onMutate: async (vars) => {
+      setEditError(null);
+      const key = weightKey(vars.day);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<WeightLogDTO[]>(key) ?? [];
+      const patched: WeightLogDTO = {
+        ...optimistic(vars.id, vars.input, vars.day),
+        date: editing?.date ?? new Date().toISOString(),
       };
-      qc.setQueryData<WeightLogDTO[]>(WEIGHT_KEY, [optimistic, ...prev]);
-      return { prev };
+      qc.setQueryData<WeightLogDTO[]>(
+        key,
+        prev.map((r) => (r.id === vars.id ? patched : r)),
+      );
+      return { prev, key };
     },
-    onError: (err, _input, ctx) => {
-      if (ctx?.prev) qc.setQueryData(WEIGHT_KEY, ctx.prev);
-      setError(err instanceof Error ? err.message : "Could not save entry");
+    onError: (err, _v, ctx) => {
+      if (ctx) qc.setQueryData(ctx.key, ctx.prev);
+      setEditError(msg(err, "Could not update entry"));
     },
-    onSuccess: () => {
-      setWeight("");
-      setBodyFat("");
-      setDate(todayISO());
+    onSuccess: () => setEditing(null),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["weightLogs"] }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (vars: { id: string; day: string }) => {
+      const res = await deleteWeightLog(vars.id);
+      if (!res.ok) throw new Error(res.error);
+      return res.data;
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: WEIGHT_KEY }),
+    onMutate: async (vars) => {
+      setDeleteError(null);
+      const key = weightKey(vars.day);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<WeightLogDTO[]>(key) ?? [];
+      qc.setQueryData<WeightLogDTO[]>(
+        key,
+        prev.filter((r) => r.id !== vars.id),
+      );
+      return { prev, key };
+    },
+    onError: (err, _v, ctx) => {
+      if (ctx) qc.setQueryData(ctx.key, ctx.prev);
+      setDeleteError(msg(err, "Could not delete entry"));
+    },
+    onSuccess: () => setDeleting(null),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["weightLogs"] }),
   });
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!weight.trim()) {
-      setError("Enter a weight");
-      return;
-    }
-    mutation.mutate({
-      weight,
-      bodyFat: bodyFat.trim() || undefined,
-      date: date || undefined,
-    });
+    if (!form.weight.trim()) return setError("Enter a weight");
+    createMutation.mutate({ input: form, day });
   }
 
-  const latest = data[0];
+  function openEdit(r: WeightLogDTO) {
+    setEditForm({
+      weight: String(kgToDisplay(r.weight, unit)),
+      bodyFat: r.bodyFat != null ? String(r.bodyFat) : "",
+    });
+    setEditError(null);
+    setEditing(r);
+  }
+
+  function onEditSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editing) return;
+    if (!editForm.weight.trim()) return setEditError("Enter a weight");
+    updateMutation.mutate({ id: editing.id, input: editForm, day });
+  }
 
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center gap-2">
-          <Scale className="size-4 text-primary" />
-          <CardTitle>Weight</CardTitle>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Scale className="size-4 text-primary" />
+            <CardTitle>Weight</CardTitle>
+          </div>
+          <DateNav
+            day={day}
+            today={today}
+            onChange={setDay}
+            onStep={(n) => setDay((d) => addDays(d, n))}
+          />
         </div>
         <CardDescription>
-          {latest
-            ? `Latest: ${kgToDisplay(latest.weight, unit)} ${weightUnitLabel(unit)}`
-            : "No entries yet — log your first weigh-in."}
+          {data.length
+            ? `${formatDay(day, today)}: ${kgToDisplay(data[0].weight, unit)} ${wlabel}`
+            : "No weigh-in on this day."}
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-5">
+      <CardContent
+        className={cn(
+          "flex flex-col gap-5 transition-opacity",
+          isPlaceholderData && "opacity-50",
+        )}
+      >
         <form onSubmit={onSubmit} className="flex flex-col gap-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-2">
-              <Label htmlFor="weight">Weight ({weightUnitLabel(unit)})</Label>
+              <Label htmlFor="new-weight">Weight ({wlabel})</Label>
               <Input
-                id="weight"
+                id="new-weight"
                 type="number"
                 inputMode="decimal"
                 step="0.1"
                 min="1"
-                placeholder={weightUnitLabel(unit)}
-                value={weight}
-                onChange={(e) => setWeight(e.target.value)}
+                placeholder={wlabel}
+                value={form.weight}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, weight: e.target.value }))
+                }
                 required
               />
             </div>
             <div className="flex flex-col gap-2">
-              <Label htmlFor="bodyFat">Body fat % (optional)</Label>
+              <Label htmlFor="new-bodyFat">Body fat % (optional)</Label>
               <Input
-                id="bodyFat"
+                id="new-bodyFat"
                 type="number"
                 inputMode="decimal"
                 step="0.1"
                 min="0"
                 max="100"
                 placeholder="%"
-                value={bodyFat}
-                onChange={(e) => setBodyFat(e.target.value)}
+                value={form.bodyFat}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, bodyFat: e.target.value }))
+                }
               />
             </div>
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="weightDate">Date</Label>
-            <Input
-              id="weightDate"
-              type="date"
-              max={todayISO()}
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
           </div>
 
           {error && (
@@ -216,19 +307,33 @@ function WeightCard({
               {error}
             </p>
           )}
+          {!isToday && (
+            <p className="text-xs text-muted-foreground">
+              Adding to {formatDay(day, today)}.
+            </p>
+          )}
 
-          <Button type="submit" disabled={mutation.isPending} className="h-10">
-            {mutation.isPending ? "Saving…" : "Log weight"}
+          <Button type="submit" disabled={createMutation.isPending} className="h-10">
+            {createMutation.isPending
+              ? "Saving…"
+              : isToday
+                ? "Log weight"
+                : `Log to ${formatDay(day, today)}`}
           </Button>
         </form>
 
-        <EntryList
+        <DayEntryList
           rows={data}
-          empty="Your weigh-ins will show up here."
+          emptyText="No weigh-in logged on this day."
+          onEdit={openEdit}
+          onDelete={(r) => {
+            setDeleteError(null);
+            setDeleting(r);
+          }}
           render={(r) => (
             <>
               <span className="font-medium text-foreground">
-                {kgToDisplay(r.weight, unit)} {weightUnitLabel(unit)}
+                {kgToDisplay(r.weight, unit)} {wlabel}
               </span>
               {r.bodyFat != null && (
                 <span className="text-muted-foreground"> · {r.bodyFat}% fat</span>
@@ -237,6 +342,98 @@ function WeightCard({
           )}
         />
       </CardContent>
+
+      {/* Edit weigh-in */}
+      <Dialog
+        open={editing !== null}
+        onOpenChange={(o) => {
+          if (!o) setEditing(null);
+        }}
+      >
+        <DialogContent>
+          <DialogTitle className="font-display text-lg font-semibold tracking-tight">
+            Edit weigh-in
+          </DialogTitle>
+          <DialogDescription className="mt-1 text-sm text-muted-foreground">
+            Update your weight and save.
+          </DialogDescription>
+          <form onSubmit={onEditSubmit} className="mt-4 flex flex-col gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="edit-weight">Weight ({wlabel})</Label>
+                <Input
+                  id="edit-weight"
+                  type="number"
+                  inputMode="decimal"
+                  step="0.1"
+                  min="1"
+                  placeholder={wlabel}
+                  value={editForm.weight}
+                  onChange={(e) =>
+                    setEditForm((f) => ({ ...f, weight: e.target.value }))
+                  }
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="edit-bodyFat">Body fat % (optional)</Label>
+                <Input
+                  id="edit-bodyFat"
+                  type="number"
+                  inputMode="decimal"
+                  step="0.1"
+                  min="0"
+                  max="100"
+                  placeholder="%"
+                  value={editForm.bodyFat}
+                  onChange={(e) =>
+                    setEditForm((f) => ({ ...f, bodyFat: e.target.value }))
+                  }
+                />
+              </div>
+            </div>
+
+            {editError && (
+              <p className="text-sm text-destructive" role="alert">
+                {editError}
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <Button
+                type="submit"
+                disabled={updateMutation.isPending}
+                className="h-10 flex-1"
+              >
+                {updateMutation.isPending ? "Saving…" : "Save changes"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10"
+                onClick={() => setEditing(null)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <DeleteDialog
+        open={deleting !== null}
+        onClose={() => setDeleting(null)}
+        onConfirm={() =>
+          deleting && deleteMutation.mutate({ id: deleting.id, day })
+        }
+        pending={deleteMutation.isPending}
+        error={deleteError}
+        label={
+          deleting
+            ? `${kgToDisplay(deleting.weight, unit)} ${wlabel} weigh-in`
+            : "this entry"
+        }
+      />
     </Card>
   );
 }
@@ -251,140 +448,250 @@ const BODY_FIELDS = [
 ] as const;
 
 type BodyFieldKey = (typeof BODY_FIELDS)[number]["key"];
+type BodyForm = Record<BodyFieldKey, string>;
+const emptyBody: BodyForm = { waist: "", chest: "", leftArm: "", rightArm: "" };
 
 function BodyCard({
   unit,
+  today,
   initialData,
 }: {
   unit: Unit;
+  today: string;
   initialData: BodyMeasurementDTO[];
 }) {
   const qc = useQueryClient();
-  const emptyForm: Record<BodyFieldKey, string> = {
-    waist: "",
-    chest: "",
-    leftArm: "",
-    rightArm: "",
-  };
-  const [values, setValues] = React.useState(emptyForm);
-  const [date, setDate] = React.useState(todayISO);
+  const [day, setDay] = React.useState(today);
+  const isToday = day === today;
+  const [form, setForm] = React.useState(emptyBody);
   const [error, setError] = React.useState<string | null>(null);
 
-  const { data = [] } = useQuery({
-    queryKey: BODY_KEY,
-    queryFn: getBodyMeasurements,
-    initialData,
+  const [editing, setEditing] = React.useState<BodyMeasurementDTO | null>(null);
+  const [editForm, setEditForm] = React.useState(emptyBody);
+  const [editError, setEditError] = React.useState<string | null>(null);
+
+  const [deleting, setDeleting] = React.useState<BodyMeasurementDTO | null>(null);
+  const [deleteError, setDeleteError] = React.useState<string | null>(null);
+
+  const { data = [], isPlaceholderData } = useQuery({
+    queryKey: bodyKey(day),
+    queryFn: () => getBodyMeasurementsForDay(day),
+    initialData: isToday ? initialData : undefined,
+    placeholderData: keepPreviousData,
   });
 
-  const mutation = useMutation({
-    mutationFn: async (input: Record<BodyFieldKey, string> & { date?: string }) => {
-      const res = await createBodyMeasurement(input);
+  const label = lengthUnitLabel(unit);
+
+  const toCm = (v: string) => (v.trim() ? displayToCm(Number(v), unit) : null);
+  const optimistic = (
+    id: string,
+    f: BodyForm,
+    d: string,
+  ): BodyMeasurementDTO => ({
+    id,
+    waist: toCm(f.waist),
+    chest: toCm(f.chest),
+    leftArm: toCm(f.leftArm),
+    rightArm: toCm(f.rightArm),
+    date: d === today ? new Date().toISOString() : `${d}T12:00:00.000Z`,
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async (vars: { input: BodyForm; day: string }) => {
+      const res = await createBodyMeasurement(vars.input, vars.day);
       if (!res.ok) throw new Error(res.error);
       return res.data;
     },
-    onMutate: async (input) => {
+    onMutate: async (vars) => {
       setError(null);
-      await qc.cancelQueries({ queryKey: BODY_KEY });
-      const prev = qc.getQueryData<BodyMeasurementDTO[]>(BODY_KEY) ?? [];
-      const toCm = (v: string) =>
-        v.trim() ? displayToCm(Number(v), unit) : null;
-      const optimistic: BodyMeasurementDTO = {
-        id: `optimistic-${Date.now()}`,
-        waist: toCm(input.waist),
-        chest: toCm(input.chest),
-        leftArm: toCm(input.leftArm),
-        rightArm: toCm(input.rightArm),
-        date: new Date(input.date ? input.date : todayISO()).toISOString(),
+      const key = bodyKey(vars.day);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<BodyMeasurementDTO[]>(key) ?? [];
+      qc.setQueryData<BodyMeasurementDTO[]>(key, [
+        optimistic(`optimistic-${Date.now()}`, vars.input, vars.day),
+        ...prev,
+      ]);
+      return { prev, key };
+    },
+    onError: (err, _v, ctx) => {
+      if (ctx) qc.setQueryData(ctx.key, ctx.prev);
+      setError(msg(err, "Could not save entry"));
+    },
+    onSuccess: () => setForm(emptyBody),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["bodyMeasurements"] }),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async (vars: { id: string; input: BodyForm; day: string }) => {
+      const res = await updateBodyMeasurement(vars.id, vars.input);
+      if (!res.ok) throw new Error(res.error);
+      return res.data;
+    },
+    onMutate: async (vars) => {
+      setEditError(null);
+      const key = bodyKey(vars.day);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<BodyMeasurementDTO[]>(key) ?? [];
+      const patched: BodyMeasurementDTO = {
+        ...optimistic(vars.id, vars.input, vars.day),
+        date: editing?.date ?? new Date().toISOString(),
       };
-      qc.setQueryData<BodyMeasurementDTO[]>(BODY_KEY, [optimistic, ...prev]);
-      return { prev };
+      qc.setQueryData<BodyMeasurementDTO[]>(
+        key,
+        prev.map((r) => (r.id === vars.id ? patched : r)),
+      );
+      return { prev, key };
     },
-    onError: (err, _input, ctx) => {
-      if (ctx?.prev) qc.setQueryData(BODY_KEY, ctx.prev);
-      setError(err instanceof Error ? err.message : "Could not save entry");
+    onError: (err, _v, ctx) => {
+      if (ctx) qc.setQueryData(ctx.key, ctx.prev);
+      setEditError(msg(err, "Could not update entry"));
     },
-    onSuccess: () => {
-      setValues(emptyForm);
-      setDate(todayISO());
+    onSuccess: () => setEditing(null),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["bodyMeasurements"] }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (vars: { id: string; day: string }) => {
+      const res = await deleteBodyMeasurement(vars.id);
+      if (!res.ok) throw new Error(res.error);
+      return res.data;
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: BODY_KEY }),
+    onMutate: async (vars) => {
+      setDeleteError(null);
+      const key = bodyKey(vars.day);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<BodyMeasurementDTO[]>(key) ?? [];
+      qc.setQueryData<BodyMeasurementDTO[]>(
+        key,
+        prev.filter((r) => r.id !== vars.id),
+      );
+      return { prev, key };
+    },
+    onError: (err, _v, ctx) => {
+      if (ctx) qc.setQueryData(ctx.key, ctx.prev);
+      setDeleteError(msg(err, "Could not delete entry"));
+    },
+    onSuccess: () => setDeleting(null),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["bodyMeasurements"] }),
   });
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const anyValue = BODY_FIELDS.some((f) => values[f.key].trim());
-    if (!anyValue) {
-      setError("Enter at least one measurement");
-      return;
-    }
-    mutation.mutate({ ...values, date: date || undefined });
+    if (!BODY_FIELDS.some((f) => form[f.key].trim()))
+      return setError("Enter at least one measurement");
+    createMutation.mutate({ input: form, day });
   }
 
-  const label = lengthUnitLabel(unit);
+  function openEdit(r: BodyMeasurementDTO) {
+    const g = (v: number | null) =>
+      v != null ? String(cmToDisplay(v, unit)) : "";
+    setEditForm({
+      waist: g(r.waist),
+      chest: g(r.chest),
+      leftArm: g(r.leftArm),
+      rightArm: g(r.rightArm),
+    });
+    setEditError(null);
+    setEditing(r);
+  }
+
+  function onEditSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editing) return;
+    if (!BODY_FIELDS.some((f) => editForm[f.key].trim()))
+      return setEditError("Enter at least one measurement");
+    updateMutation.mutate({ id: editing.id, input: editForm, day });
+  }
+
+  const renderFields = (
+    values: BodyForm,
+    set: (key: BodyFieldKey, value: string) => void,
+    idPrefix: string,
+  ) => (
+    <div className="grid gap-4 sm:grid-cols-2">
+      {BODY_FIELDS.map((f) => (
+        <div key={f.key} className="flex flex-col gap-2">
+          <Label htmlFor={`${idPrefix}-${f.key}`}>
+            {f.label} ({label})
+          </Label>
+          <Input
+            id={`${idPrefix}-${f.key}`}
+            type="number"
+            inputMode="decimal"
+            step="0.1"
+            min="1"
+            placeholder={label}
+            value={values[f.key]}
+            onChange={(e) => set(f.key, e.target.value)}
+          />
+        </div>
+      ))}
+    </div>
+  );
 
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center gap-2">
-          <Ruler className="size-4 text-primary" />
-          <CardTitle>Body measurements</CardTitle>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Ruler className="size-4 text-primary" />
+            <CardTitle>Body measurements</CardTitle>
+          </div>
+          <DateNav
+            day={day}
+            today={today}
+            onChange={setDay}
+            onStep={(n) => setDay((d) => addDays(d, n))}
+          />
         </div>
         <CardDescription>
           Track waist, chest, and arms in {label}. Fill in any you have.
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-5">
+      <CardContent
+        className={cn(
+          "flex flex-col gap-5 transition-opacity",
+          isPlaceholderData && "opacity-50",
+        )}
+      >
         <form onSubmit={onSubmit} className="flex flex-col gap-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            {BODY_FIELDS.map((f) => (
-              <div key={f.key} className="flex flex-col gap-2">
-                <Label htmlFor={f.key}>
-                  {f.label} ({label})
-                </Label>
-                <Input
-                  id={f.key}
-                  type="number"
-                  inputMode="decimal"
-                  step="0.1"
-                  min="1"
-                  placeholder={label}
-                  value={values[f.key]}
-                  onChange={(e) =>
-                    setValues((v) => ({ ...v, [f.key]: e.target.value }))
-                  }
-                />
-              </div>
-            ))}
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="bodyDate">Date</Label>
-            <Input
-              id="bodyDate"
-              type="date"
-              max={todayISO()}
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
-          </div>
+          {renderFields(
+            form,
+            (key, value) => setForm((v) => ({ ...v, [key]: value })),
+            "new",
+          )}
 
           {error && (
             <p className="text-sm text-destructive" role="alert">
               {error}
             </p>
           )}
+          {!isToday && (
+            <p className="text-xs text-muted-foreground">
+              Adding to {formatDay(day, today)}.
+            </p>
+          )}
 
-          <Button type="submit" disabled={mutation.isPending} className="h-10">
-            {mutation.isPending ? "Saving…" : "Log measurements"}
+          <Button type="submit" disabled={createMutation.isPending} className="h-10">
+            {createMutation.isPending
+              ? "Saving…"
+              : isToday
+                ? "Log measurements"
+                : `Log to ${formatDay(day, today)}`}
           </Button>
         </form>
 
-        <EntryList
+        <DayEntryList
           rows={data}
-          empty="Your measurements will show up here."
+          emptyText="No measurements logged on this day."
+          onEdit={openEdit}
+          onDelete={(r) => {
+            setDeleteError(null);
+            setDeleting(r);
+          }}
           render={(r) => {
             const parts = BODY_FIELDS.filter((f) => r[f.key] != null).map(
-              (f) =>
-                `${f.label} ${cmToDisplay(r[f.key] as number, unit)}${label}`,
+              (f) => `${f.label} ${cmToDisplay(r[f.key] as number, unit)}${label}`,
             );
             return (
               <span className="font-medium text-foreground">
@@ -394,43 +701,190 @@ function BodyCard({
           }}
         />
       </CardContent>
+
+      {/* Edit measurements */}
+      <Dialog
+        open={editing !== null}
+        onOpenChange={(o) => {
+          if (!o) setEditing(null);
+        }}
+      >
+        <DialogContent>
+          <DialogTitle className="font-display text-lg font-semibold tracking-tight">
+            Edit measurements
+          </DialogTitle>
+          <DialogDescription className="mt-1 text-sm text-muted-foreground">
+            Update any measurement and save. Clear a field to remove it.
+          </DialogDescription>
+          <form onSubmit={onEditSubmit} className="mt-4 flex flex-col gap-4">
+            {renderFields(
+              editForm,
+              (key, value) => setEditForm((v) => ({ ...v, [key]: value })),
+              "edit",
+            )}
+
+            {editError && (
+              <p className="text-sm text-destructive" role="alert">
+                {editError}
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <Button
+                type="submit"
+                disabled={updateMutation.isPending}
+                className="h-10 flex-1"
+              >
+                {updateMutation.isPending ? "Saving…" : "Save changes"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10"
+                onClick={() => setEditing(null)}
+              >
+                Cancel
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <DeleteDialog
+        open={deleting !== null}
+        onClose={() => setDeleting(null)}
+        onConfirm={() =>
+          deleting && deleteMutation.mutate({ id: deleting.id, day })
+        }
+        pending={deleteMutation.isPending}
+        error={deleteError}
+        label="these measurements"
+      />
     </Card>
   );
 }
 
 /* -------------------------------- Shared --------------------------------- */
 
-function EntryList<T extends { id: string; date: string }>({
+// Per-day entry list with inline edit/delete. Optimistic (not-yet-persisted)
+// rows have no real id to act on, so their actions are hidden.
+function DayEntryList<T extends { id: string }>({
   rows,
   render,
-  empty,
+  emptyText,
+  onEdit,
+  onDelete,
 }: {
   rows: T[];
   render: (row: T) => React.ReactNode;
-  empty: string;
+  emptyText: string;
+  onEdit: (row: T) => void;
+  onDelete: (row: T) => void;
 }) {
   if (rows.length === 0) {
     return (
       <p className="border-t border-border pt-4 text-sm text-muted-foreground">
-        {empty}
+        {emptyText}
       </p>
     );
   }
 
   return (
     <ul className="flex flex-col border-t border-border">
-      {rows.map((row) => (
-        <li
-          key={row.id}
-          className={cn(
-            "flex items-center justify-between gap-3 border-b border-border py-2.5 text-sm last:border-b-0",
-            isOptimistic(row.id) && "opacity-60",
-          )}
-        >
-          <span className="text-muted-foreground">{formatDate(row.date)}</span>
-          <span className="text-right">{render(row)}</span>
-        </li>
-      ))}
+      {rows.map((row) => {
+        const pending = row.id.startsWith("optimistic-");
+        return (
+          <li
+            key={row.id}
+            className={cn(
+              "flex items-center justify-between gap-3 border-b border-border py-2 text-sm last:border-b-0",
+              pending && "opacity-60",
+            )}
+          >
+            <span className="min-w-0">{render(row)}</span>
+            {!pending && (
+              <span className="flex shrink-0 items-center gap-0.5">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground hover:text-foreground"
+                  aria-label="Edit entry"
+                  onClick={() => onEdit(row)}
+                >
+                  <Pencil />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="text-muted-foreground hover:text-destructive"
+                  aria-label="Delete entry"
+                  onClick={() => onDelete(row)}
+                >
+                  <Trash2 />
+                </Button>
+              </span>
+            )}
+          </li>
+        );
+      })}
     </ul>
+  );
+}
+
+// Small on-brand delete confirm, shared by both cards.
+function DeleteDialog({
+  open,
+  onClose,
+  onConfirm,
+  pending,
+  error,
+  label,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  pending: boolean;
+  error: string | null;
+  label: string;
+}) {
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <DialogContent className="max-w-sm">
+        <DialogTitle className="font-display text-lg font-semibold tracking-tight">
+          Delete entry?
+        </DialogTitle>
+        <DialogDescription className="mt-1 text-sm text-muted-foreground">
+          Remove {label} from this day? This can&apos;t be undone.
+        </DialogDescription>
+
+        {error && (
+          <p className="mt-3 text-sm text-destructive" role="alert">
+            {error}
+          </p>
+        )}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <Button type="button" variant="outline" className="h-9" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            className="h-9"
+            disabled={pending}
+            onClick={onConfirm}
+          >
+            {pending ? "Deleting…" : "Delete"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

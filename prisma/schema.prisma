@@ -73,6 +73,7 @@ model User {
   foodLogs         FoodLog[]
   weightLogs       WeightLog[]
   bodyMeasurements BodyMeasurement[]
+  exerciseLogs     ExerciseLog[]
   dailyActivities  DailyActivity[]
   chatSessions     ChatSession[]
   sessions         Session[]
@@ -107,9 +108,33 @@ model Exercise {
   notes     String?
   updatedAt DateTime @updatedAt
 
-  plan WorkoutPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  plan WorkoutPlan  @relation(fields: [planId], references: [id], onDelete: Cascade)
+  logs ExerciseLog[]
 
   @@index([planId])
+}
+
+/// An actual lift recorded against a plan Exercise (the prescription). PRs and
+/// progression group by the denormalized `exerciseName` across ALL plans/days,
+/// so history survives even if the plan exercise is later edited or deleted —
+/// hence the soft `exerciseId` link (SetNull), while the log cascades with the
+/// user. The plan's "Day 1 / Day 3" are structural split labels; `date` here is
+/// the real calendar day the lift was logged. Weight is metric (kg).
+model ExerciseLog {
+  id           String   @id @default(cuid())
+  userId       String
+  exerciseId   String? // soft link to the plan Exercise; null if it was later deleted
+  exerciseName String // denormalized, trimmed — the durable grouping key (case-insensitive)
+  weight       Float // kg
+  reps         Int
+  date         DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exercise Exercise? @relation(fields: [exerciseId], references: [id], onDelete: SetNull)
+
+  @@index([userId, exerciseName])
 }
 
 model FoodLog {

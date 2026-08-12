@@ -21,10 +21,12 @@ import {
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+import type { Unit } from "@/lib/units";
 import {
   generatePlan,
   getLatestPlan,
   type GenerateState,
+  type LiftLogDTO,
   type PlanDTO,
 } from "./actions";
 import { PlanView, PLAN_KEY } from "./plan-view";
@@ -38,7 +40,17 @@ const chip =
 const segment =
   "flex cursor-pointer items-center justify-center rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground peer-checked:bg-background peer-checked:text-foreground peer-checked:shadow-sm";
 
-export function WorkoutClient({ initialPlan }: { initialPlan: PlanDTO | null }) {
+export function WorkoutClient({
+  initialPlan,
+  unit,
+  today,
+  initialLifts,
+}: {
+  initialPlan: PlanDTO | null;
+  unit: Unit;
+  today: string;
+  initialLifts: LiftLogDTO[];
+}) {
   const qc = useQueryClient();
   const [state, formAction, pending] = useActionState<GenerateState, FormData>(
     generatePlan,
@@ -196,7 +208,12 @@ export function WorkoutClient({ initialPlan }: { initialPlan: PlanDTO | null }) 
         </Card>
 
         {plan ? (
-          <PlanView plan={plan} />
+          <PlanView
+            plan={plan}
+            unit={unit}
+            today={today}
+            initialLifts={initialLifts}
+          />
         ) : (
           <Card className="items-center justify-center p-10 text-center">
             <div className="flex flex-col items-center gap-2">

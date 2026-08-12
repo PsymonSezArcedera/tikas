@@ -5,5 +5,6 @@ export * from "./user";
 export * from "./weight-log";
 export * from "./body-measurement";
 export * from "./food-log";
+export * from "./exercise-log";
 export * from "./workout-plan";
 export * from "./chat";

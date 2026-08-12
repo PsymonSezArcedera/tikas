@@ -2,9 +2,11 @@
 
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Dumbbell, Pencil, Plus, Trash2 } from "lucide-react";
+import { Menu } from "@base-ui/react/menu";
+import { ChevronRight, Dumbbell, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { INTENSITIES, WORKOUT_GOALS } from "@/lib/validations";
+import { type Unit } from "@/lib/units";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,13 +28,18 @@ import {
   updateExercise,
   updatePlanMeta,
   type ExerciseDTO,
+  type LiftLogDTO,
   type PlanDTO,
 } from "./actions";
+import { ExerciseHub } from "./lift-progress";
 
 export const PLAN_KEY = ["workoutPlan"] as const;
 
 const NOTES_CLASS =
   "min-h-16 w-full resize-y rounded-lg border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/40 dark:bg-input/30";
+
+const MENU_ITEM =
+  "flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-sm outline-none select-none data-[highlighted]:bg-muted";
 
 const msg = (e: unknown, fallback: string) =>
   e instanceof Error ? e.message : fallback;
@@ -158,9 +165,23 @@ const exFormError = (f: ExForm): string | null => {
 
 /* -------------------------------- PlanView ------------------------------- */
 
-export function PlanView({ plan }: { plan: PlanDTO }) {
+export function PlanView({
+  plan,
+  unit,
+  today,
+  initialLifts,
+}: {
+  plan: PlanDTO;
+  unit: Unit;
+  today: string;
+  initialLifts: LiftLogDTO[];
+}) {
   const qc = useQueryClient();
   const days = groupByDay(plan.exercises);
+
+  // The per-exercise hub (PR + progression + history + logging), opened by
+  // tapping an exercise row.
+  const [hubEx, setHubEx] = React.useState<ExerciseDTO | null>(null);
 
   // Dialog state.
   const [editMeta, setEditMeta] = React.useState(false);
@@ -474,59 +495,102 @@ export function PlanView({ plan }: { plan: PlanDTO }) {
               <ul className="flex flex-col">
                 {exercises.map((e) => {
                   const pending = e.id.startsWith("optimistic-");
+                  const stats = (
+                    <div className="shrink-0 text-right">
+                      <p className="font-display text-sm font-semibold tracking-tight">
+                        {e.sets} × {e.reps}
+                      </p>
+                      <p className="text-xs text-muted-foreground">rest {e.rest}</p>
+                    </div>
+                  );
+                  const info = (
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium">{e.exercise}</p>
+                      {e.notes ? (
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {e.notes}
+                        </p>
+                      ) : null}
+                    </div>
+                  );
                   return (
                     <li
                       key={e.id}
                       className={cn(
-                        "flex items-start justify-between gap-4 border-b border-border py-3 last:border-b-0",
+                        "border-b border-border last:border-b-0",
                         pending && "opacity-60",
                       )}
                     >
-                      <div className="min-w-0">
-                        <p className="font-medium">{e.exercise}</p>
-                        {e.notes ? (
-                          <p className="mt-0.5 text-xs text-muted-foreground">
-                            {e.notes}
-                          </p>
-                        ) : null}
-                      </div>
-                      <div className="flex shrink-0 items-start gap-1">
-                        <div className="text-right">
-                          <p className="font-display text-sm font-semibold tracking-tight">
-                            {e.sets} × {e.reps}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            rest {e.rest}
-                          </p>
+                      {pending ? (
+                        <div className="flex items-center gap-3 px-1 py-3">
+                          {info}
+                          {stats}
                         </div>
-                        {!pending && (
-                          <div className="flex items-center gap-0.5">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-sm"
-                              className="text-muted-foreground hover:text-foreground"
-                              aria-label={`Edit ${e.exercise}`}
-                              onClick={() => openEditEx(e)}
+                      ) : (
+                        // The whole row opens the per-exercise hub. Overflow menu
+                        // (edit/delete) stops propagation so it doesn't also open it.
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`Open ${e.exercise}`}
+                          onClick={() => setHubEx(e)}
+                          onKeyDown={(ev) => {
+                            if (ev.key === "Enter" || ev.key === " ") {
+                              ev.preventDefault();
+                              setHubEx(e);
+                            }
+                          }}
+                          className="group flex cursor-pointer items-center gap-3 rounded-xl px-2 py-3 text-left transition-colors hover:bg-secondary/60 focus-visible:bg-secondary/60 focus-visible:outline-none"
+                        >
+                          {info}
+                          {stats}
+                          <Menu.Root>
+                            <Menu.Trigger
+                              aria-label={`Actions for ${e.exercise}`}
+                              onClick={(ev) => ev.stopPropagation()}
+                              onPointerDown={(ev) => ev.stopPropagation()}
+                              className="flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/40 aria-expanded:bg-muted aria-expanded:text-foreground"
                             >
-                              <Pencil />
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-sm"
-                              className="text-muted-foreground hover:text-destructive"
-                              aria-label={`Delete ${e.exercise}`}
-                              onClick={() => {
-                                setConfirmError(null);
-                                setDeletingEx(e);
-                              }}
-                            >
-                              <Trash2 />
-                            </Button>
-                          </div>
-                        )}
-                      </div>
+                              <MoreHorizontal className="size-4" />
+                            </Menu.Trigger>
+                            <Menu.Portal>
+                              <Menu.Positioner
+                                align="end"
+                                sideOffset={6}
+                                className="z-50"
+                              >
+                                <Menu.Popup className="min-w-36 rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-lg outline-none">
+                                  <Menu.Item
+                                    className={MENU_ITEM}
+                                    onClick={(ev) => {
+                                      ev.stopPropagation();
+                                      openEditEx(e);
+                                    }}
+                                  >
+                                    <Pencil className="size-4" />
+                                    Edit
+                                  </Menu.Item>
+                                  <Menu.Item
+                                    className={cn(
+                                      MENU_ITEM,
+                                      "text-destructive data-[highlighted]:bg-destructive/10 data-[highlighted]:text-destructive",
+                                    )}
+                                    onClick={(ev) => {
+                                      ev.stopPropagation();
+                                      setConfirmError(null);
+                                      setDeletingEx(e);
+                                    }}
+                                  >
+                                    <Trash2 className="size-4" />
+                                    Delete
+                                  </Menu.Item>
+                                </Menu.Popup>
+                              </Menu.Positioner>
+                            </Menu.Portal>
+                          </Menu.Root>
+                          <ChevronRight className="size-4 shrink-0 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5" />
+                        </div>
+                      )}
                     </li>
                   );
                 })}
@@ -762,6 +826,15 @@ export function PlanView({ plan }: { plan: PlanDTO }) {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Per-exercise hub — PR, progression, history, and logging */}
+      <ExerciseHub
+        exercise={hubEx}
+        unit={unit}
+        today={today}
+        initialLifts={initialLifts}
+        onClose={() => setHubEx(null)}
+      />
 
       {/* Confirms */}
       <ConfirmDialog

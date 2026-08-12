@@ -76,3 +76,15 @@ export function reevaluateLoggedWeight(
     { loggedWeight: false },
   );
 }
+
+/** Re-derive `workedOut` for the entry's day after a lift-log delete. Lift logs
+ *  are the sole driver of workedOut, so an empty day flips it back to false. */
+export function reevaluateWorkedOut(userId: string, when: Date): Promise<void> {
+  return reevaluateFlag(
+    userId,
+    when,
+    ({ gte, lt }) =>
+      prisma.exerciseLog.count({ where: { userId, date: { gte, lt } } }),
+    { workedOut: false },
+  );
+}

@@ -2,11 +2,15 @@
 
 import { prisma } from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { markDailyActivity, reevaluateWorkedOut } from "@/lib/daily-activity";
+import { dayInstant, safeDayKey, todayKey } from "@/lib/day";
+import { displayToKg, type Unit } from "@/lib/units";
 import { generateWorkoutPlanJSON } from "@/lib/ai/workout";
 import {
   aiExerciseSchema,
   aiWorkoutPlanSchema,
   exerciseEditSchema,
+  exerciseLogSchema,
   workoutPlanMetaSchema,
   workoutPlanRequestSchema,
 } from "@/lib/validations";
@@ -389,4 +393,152 @@ export async function generatePlan(
     console.error("[workout] Failed to store plan:", err);
     return { error: "Couldn't save the plan. Please try again." };
   }
+}
+
+/* --------------------------- Lift logging (PRs) -------------------------- */
+
+// A recorded lift. weight is metric (kg); the client converts for display. date
+// is the ISO instant; PR/history/progression group by exerciseName (normalized
+// client-side) across all plans and days.
+export type LiftLogDTO = {
+  id: string;
+  exerciseId: string | null;
+  exerciseName: string;
+  weight: number; // kg
+  reps: number;
+  date: string; // ISO
+};
+
+export type LiftInputRaw = { weight: string; reps: string };
+
+const toLiftDTO = (r: {
+  id: string;
+  exerciseId: string | null;
+  exerciseName: string;
+  weight: number;
+  reps: number;
+  date: Date;
+}): LiftLogDTO => ({
+  id: r.id,
+  exerciseId: r.exerciseId,
+  exerciseName: r.exerciseName,
+  weight: r.weight,
+  reps: r.reps,
+  date: r.date.toISOString(),
+});
+
+/** All of the user's recorded lifts, oldest first (stable order for grouping
+ *  and progression charts; PRs and history are derived client-side by name). */
+export async function getLiftLogs(): Promise<LiftLogDTO[]> {
+  const session = await getSession();
+  if (!session) return [];
+  const rows = await prisma.exerciseLog.findMany({
+    where: { userId: session.user.id },
+    orderBy: [{ date: "asc" }, { createdAt: "asc" }],
+  });
+  return rows.map(toLiftDTO);
+}
+
+/**
+ * Record a lift against a plan exercise on `dayKey` (defaults to today). The log
+ * is soft-linked to the plan exercise but stores its name denormalized, so PR
+ * history survives the plan exercise being edited/deleted. Flips workedOut for
+ * that calendar day. Ownership is checked via the exercise's plan.
+ */
+export async function logLift(
+  exerciseId: string,
+  input: LiftInputRaw,
+  dayKey: string = todayKey(),
+): Promise<ActionResult<LiftLogDTO>> {
+  const userId = await requireUserId();
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { unitPreference: true },
+  });
+  const unit = (user?.unitPreference ?? "METRIC") as Unit;
+
+  const rawWeight = input.weight?.trim();
+  const weightNum = rawWeight ? Number(rawWeight) : NaN;
+  const parsed = exerciseLogSchema.safeParse({
+    // Convert the typed weight from the user's unit to kg before validation.
+    weight: Number.isFinite(weightNum) ? displayToKg(weightNum, unit) : rawWeight,
+    reps: input.reps,
+  });
+  if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) };
+
+  const exercise = await prisma.exercise.findFirst({
+    where: { id: exerciseId, plan: { userId } },
+    select: { id: true, exercise: true },
+  });
+  if (!exercise) return { ok: false, error: "That exercise no longer exists." };
+
+  const date = parsed.data.date ?? dayInstant(safeDayKey(dayKey));
+
+  const created = await prisma.exerciseLog.create({
+    data: {
+      userId,
+      exerciseId: exercise.id,
+      exerciseName: exercise.exercise.trim(),
+      weight: parsed.data.weight,
+      reps: parsed.data.reps,
+      date,
+    },
+  });
+
+  await markDailyActivity(userId, date, { workedOut: true });
+
+  return { ok: true, data: toLiftDTO(created) };
+}
+
+/** Edit a recorded lift's weight/reps. Ownership-checked; date preserved. */
+export async function updateLift(
+  id: string,
+  input: LiftInputRaw,
+): Promise<ActionResult<LiftLogDTO>> {
+  const userId = await requireUserId();
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { unitPreference: true },
+  });
+  const unit = (user?.unitPreference ?? "METRIC") as Unit;
+
+  const rawWeight = input.weight?.trim();
+  const weightNum = rawWeight ? Number(rawWeight) : NaN;
+  const parsed = exerciseLogSchema.safeParse({
+    weight: Number.isFinite(weightNum) ? displayToKg(weightNum, unit) : rawWeight,
+    reps: input.reps,
+  });
+  if (!parsed.success) return { ok: false, error: firstIssue(parsed.error) };
+
+  const existing = await prisma.exerciseLog.findFirst({
+    where: { id, userId },
+    select: { id: true },
+  });
+  if (!existing) return { ok: false, error: "That entry no longer exists." };
+
+  const updated = await prisma.exerciseLog.update({
+    where: { id },
+    data: { weight: parsed.data.weight, reps: parsed.data.reps },
+  });
+  return { ok: true, data: toLiftDTO(updated) };
+}
+
+/**
+ * Delete a recorded lift (ownership-checked). Re-evaluates workedOut for that
+ * calendar day: if it was the last lift of the day, the flag flips back to false.
+ */
+export async function deleteLift(
+  id: string,
+): Promise<ActionResult<{ id: string }>> {
+  const userId = await requireUserId();
+  const existing = await prisma.exerciseLog.findFirst({
+    where: { id, userId },
+    select: { id: true, date: true },
+  });
+  if (!existing) return { ok: false, error: "That entry no longer exists." };
+
+  await prisma.exerciseLog.delete({ where: { id } });
+  await reevaluateWorkedOut(userId, existing.date);
+
+  return { ok: true, data: { id } };
 }

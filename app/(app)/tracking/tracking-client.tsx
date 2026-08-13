@@ -38,6 +38,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DateNav, formatDay } from "@/components/date-nav";
+import { InlineError } from "@/components/inline-error";
 import {
   createBodyMeasurement,
   createWeightLog,
@@ -123,12 +124,22 @@ function WeightCard({
   const [deleting, setDeleting] = React.useState<WeightLogDTO | null>(null);
   const [deleteError, setDeleteError] = React.useState<string | null>(null);
 
-  const { data = [], isPlaceholderData } = useQuery({
+  const {
+    data = [],
+    isPlaceholderData,
+    isError,
+    error: fetchError,
+    refetch,
+  } = useQuery({
     queryKey: weightKey(day),
     queryFn: () => getWeightLogsForDay(day),
     initialData: isToday ? initialData : undefined,
     placeholderData: keepPreviousData,
   });
+
+  // See nutrition-client: keepPreviousData + seeded today masks isError, so the
+  // failure shows on `error` while placeholder data is displayed. Cover both.
+  const loadFailed = isError || (isPlaceholderData && fetchError != null);
 
   const wlabel = weightUnitLabel(unit);
 
@@ -256,15 +267,17 @@ function WeightCard({
           />
         </div>
         <CardDescription>
-          {data.length
-            ? `${formatDay(day, today)}: ${kgToDisplay(data[0].weight, unit)} ${wlabel}`
-            : "No weigh-in on this day."}
+          {loadFailed
+            ? "Couldn't load this day."
+            : data.length
+              ? `${formatDay(day, today)}: ${kgToDisplay(data[0].weight, unit)} ${wlabel}`
+              : "No weigh-in on this day."}
         </CardDescription>
       </CardHeader>
       <CardContent
         className={cn(
           "flex flex-col gap-5 transition-opacity",
-          isPlaceholderData && "opacity-50",
+          isPlaceholderData && !loadFailed && "opacity-50",
         )}
       >
         <form onSubmit={onSubmit} className="flex flex-col gap-4">
@@ -326,6 +339,8 @@ function WeightCard({
         <DayEntryList
           rows={data}
           emptyText="No weigh-in logged on this day."
+          error={loadFailed}
+          onRetry={() => refetch()}
           onEdit={openEdit}
           onDelete={(r) => {
             setDeleteError(null);
@@ -478,12 +493,20 @@ function BodyCard({
   const [deleting, setDeleting] = React.useState<BodyMeasurementDTO | null>(null);
   const [deleteError, setDeleteError] = React.useState<string | null>(null);
 
-  const { data = [], isPlaceholderData } = useQuery({
+  const {
+    data = [],
+    isPlaceholderData,
+    isError,
+    error: fetchError,
+    refetch,
+  } = useQuery({
     queryKey: bodyKey(day),
     queryFn: () => getBodyMeasurementsForDay(day),
     initialData: isToday ? initialData : undefined,
     placeholderData: keepPreviousData,
   });
+
+  const loadFailed = isError || (isPlaceholderData && fetchError != null);
 
   const label = lengthUnitLabel(unit);
 
@@ -656,7 +679,7 @@ function BodyCard({
       <CardContent
         className={cn(
           "flex flex-col gap-5 transition-opacity",
-          isPlaceholderData && "opacity-50",
+          isPlaceholderData && !loadFailed && "opacity-50",
         )}
       >
         <form onSubmit={onSubmit} className="flex flex-col gap-4">
@@ -689,6 +712,8 @@ function BodyCard({
         <DayEntryList
           rows={data}
           emptyText="No measurements logged on this day."
+          error={loadFailed}
+          onRetry={() => refetch()}
           onEdit={openEdit}
           onDelete={(r) => {
             setDeleteError(null);
@@ -779,13 +804,31 @@ function DayEntryList<T extends { id: string }>({
   emptyText,
   onEdit,
   onDelete,
+  error = false,
+  onRetry,
 }: {
   rows: T[];
   render: (row: T) => React.ReactNode;
   emptyText: string;
   onEdit: (row: T) => void;
   onDelete: (row: T) => void;
+  // When the day's fetch failed and there's nothing to show, surface an error
+  // instead of the (misleading) empty text.
+  error?: boolean;
+  onRetry?: () => void;
 }) {
+  // A failed fetch takes priority over any rows — with keepPreviousData those
+  // rows are a stale placeholder from another day, so show the error instead.
+  if (error) {
+    return (
+      <div className="border-t border-border pt-4">
+        <InlineError
+          message="Couldn't load this day's entries. Check your connection and try again."
+          onRetry={onRetry}
+        />
+      </div>
+    );
+  }
   if (rows.length === 0) {
     return (
       <p className="border-t border-border pt-4 text-sm text-muted-foreground">

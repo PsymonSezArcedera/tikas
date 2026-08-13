@@ -331,6 +331,23 @@ export function CoachChatDrawer(
   );
 }
 
+// Three staggered pulsing dots — the "coach is typing" state while a reply is
+// pending. The delays make the pulse ripple left-to-right rather than blink in
+// unison.
+function TypingDots() {
+  return (
+    <span className="flex items-center gap-1 py-1" aria-label={`Typing…`}>
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="size-1.5 animate-pulse rounded-full bg-muted-foreground"
+          style={{ animationDelay: `${i * 160}ms` }}
+        />
+      ))}
+    </span>
+  );
+}
+
 function MessageBubble({
   message,
   coachName,
@@ -358,13 +375,21 @@ function MessageBubble({
             {coachName}
           </p>
         )}
-        {plain ? (
-          <span className="whitespace-pre-wrap">{message.content}</span>
+        {message.streaming && !message.content ? (
+          // Reply pending, no tokens yet — show a "typing" indicator so the wait
+          // (a Neon cold-start, or Vita's non-streamed reply) looks intentional.
+          <TypingDots />
         ) : (
-          <CoachMarkdown content={message.content} />
-        )}
-        {message.streaming && (
-          <span className="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-current align-middle" />
+          <>
+            {plain ? (
+              <span className="whitespace-pre-wrap">{message.content}</span>
+            ) : (
+              <CoachMarkdown content={message.content} />
+            )}
+            {message.streaming && (
+              <span className="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-current align-middle" />
+            )}
+          </>
         )}
       </div>
     </div>

@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import { addDays } from "@/lib/day";
 import { Button } from "@/components/ui/button";
 import { DateNav, formatDay } from "@/components/date-nav";
+import { InlineError } from "@/components/inline-error";
 import {
   Card,
   CardContent,
@@ -150,7 +151,13 @@ export function NutritionClient({
   const [deleting, setDeleting] = React.useState<FoodLogDTO | null>(null);
   const [deleteError, setDeleteError] = React.useState<string | null>(null);
 
-  const { data = [], isPlaceholderData } = useQuery({
+  const {
+    data = [],
+    isPlaceholderData,
+    isError,
+    error: fetchError,
+    refetch,
+  } = useQuery({
     queryKey: dayKey(day),
     queryFn: () => getFoodLogsForDay(day),
     // Seed only today's query with the server-rendered logs; other days fetch.
@@ -159,6 +166,12 @@ export function NutritionClient({
     // so switching days doesn't flash empty.
     placeholderData: keepPreviousData,
   });
+
+  // Did the selected day's fetch fail? With `keepPreviousData` + a seeded today,
+  // a failed day-switch keeps status "success" showing the placeholder, so
+  // `isError` never flips — the failure lands on `error` while `isPlaceholderData`
+  // stays true. Cover both so a broken fetch shows an error, not a false "empty".
+  const loadFailed = isError || (isPlaceholderData && fetchError != null);
 
   const createMutation = useMutation({
     mutationFn: async (vars: { input: FoodLogInputRaw; day: string }) => {
@@ -393,21 +406,34 @@ export function NutritionClient({
               />
             </div>
             <CardDescription>
-              {data.length === 0
-                ? isToday
-                  ? "Nothing logged yet."
-                  : "No food logged on this day."
-                : `${data.length} ${data.length === 1 ? "entry" : "entries"} logged.`}
+              {loadFailed
+                ? "Couldn't load this day."
+                : data.length === 0
+                  ? isToday
+                    ? "Nothing logged yet."
+                    : "No food logged on this day."
+                  : `${data.length} ${data.length === 1 ? "entry" : "entries"} logged.`}
             </CardDescription>
           </CardHeader>
           <CardContent
             className={cn(
               "flex flex-col gap-5 transition-opacity",
-              isPlaceholderData && "opacity-50",
+              isPlaceholderData && !loadFailed && "opacity-50",
             )}
           >
-            <DailyTotals totals={totals} />
-            <MealBreakdown logs={data} onEdit={openEdit} onDelete={askDelete} />
+            {loadFailed ? (
+              // Fetch failed — show an error, not the (misleading) zero totals or a
+              // stale placeholder from another day.
+              <InlineError
+                message="Couldn't load this day's food. Check your connection and try again."
+                onRetry={() => refetch()}
+              />
+            ) : (
+              <>
+                <DailyTotals totals={totals} />
+                <MealBreakdown logs={data} onEdit={openEdit} onDelete={askDelete} />
+              </>
+            )}
           </CardContent>
         </Card>
       </div>

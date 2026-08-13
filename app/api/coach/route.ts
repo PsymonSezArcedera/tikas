@@ -11,6 +11,7 @@ import { LOG_FOOD_NAME } from "@/lib/ai/food-tool";
 import { nutritionSummary, SOURCE_LABEL } from "@/lib/food-summary";
 import { resolveFoodNutrition } from "@/lib/off";
 import { isMedicalConcern, MEDICAL_DECLINE } from "@/lib/ai/medical-guardrail";
+import { aiRateLimitMessage, checkAiRateLimit } from "@/lib/rate-limit";
 import { chatRequestSchema, foodLogSchema } from "@/lib/validations";
 
 // Uses the Neon driver adapter (WebSocket) + Gemini, so this must run on Node.
@@ -232,6 +233,21 @@ export async function POST(req: NextRequest) {
     });
     return new Response(stringStream(MEDICAL_DECLINE), {
       headers: streamHeaders(chatSessionId),
+    });
+  }
+
+  // Per-user rate limit, checked only after the (Gemini-free) medical decline so
+  // those don't spend budget. On a block, reply with a friendly message through
+  // the same channel — no Gemini call, no crash.
+  const rateLimit = await checkAiRateLimit(userId);
+  if (!rateLimit.ok) {
+    const message = aiRateLimitMessage(rateLimit);
+    await saveAssistant(chatSessionId, message);
+    return new Response(stringStream(message), {
+      headers: {
+        ...streamHeaders(chatSessionId),
+        "Retry-After": String(rateLimit.retryAfterSeconds),
+      },
     });
   }
 

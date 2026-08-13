@@ -273,3 +273,14 @@ model Verification {
 
   @@index([identifier])
 }
+
+// Durable per-user rate-limit counters for the AI (Gemini) endpoints. Serverless
+// has no in-process memory between requests, so the counter lives here rather
+// than in RAM. One row per (user, action, window); `key` encodes all three, e.g.
+// "<userId>:ai:minute". `windowStart` is the fixed window's start instant — a new
+// window resets the count. Written via an atomic upsert in lib/rate-limit.ts.
+model RateLimit {
+  key         String   @id
+  count       Int      @default(1)
+  windowStart DateTime
+}

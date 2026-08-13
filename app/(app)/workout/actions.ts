@@ -6,6 +6,7 @@ import { markDailyActivity, reevaluateWorkedOut } from "@/lib/daily-activity";
 import { dayInstant, safeDayKey, todayKey } from "@/lib/day";
 import { displayToKg, type Unit } from "@/lib/units";
 import { generateWorkoutPlanJSON } from "@/lib/ai/workout";
+import { aiRateLimitMessage, checkAiRateLimit } from "@/lib/rate-limit";
 import {
   aiExerciseSchema,
   aiWorkoutPlanSchema,
@@ -334,6 +335,13 @@ export async function generatePlan(
     };
   }
   const req = parsedInput.data;
+
+  // 1b) Per-user rate limit before spending a Gemini call. Shared AI budget, so
+  //     spamming the generator counts against the same cap as coach chat.
+  const rateLimit = await checkAiRateLimit(session.user.id);
+  if (!rateLimit.ok) {
+    return { error: aiRateLimitMessage(rateLimit) };
+  }
 
   // 2) Call Gemini. Network/API failure → friendly message, nothing written.
   let rawText: string;

@@ -9,6 +9,7 @@ import {
 } from "@/lib/ai/chat";
 import { LOG_FOOD_NAME } from "@/lib/ai/food-tool";
 import { nutritionSummary, SOURCE_LABEL } from "@/lib/food-summary";
+import { resolveFoodNutrition } from "@/lib/off";
 import { isMedicalConcern, MEDICAL_DECLINE } from "@/lib/ai/medical-guardrail";
 import { chatRequestSchema, foodLogSchema } from "@/lib/validations";
 
@@ -104,23 +105,48 @@ async function handleVita(
     }
 
     const d = parsed.data;
+
+    // Prefer real, sourced numbers from Open Food Facts over the model's guess.
+    // We can only honestly scale OFF's per-100g data when the serving is a mass
+    // or volume (g / ml); for "1 cup", "2 pieces", etc. the gram weight is
+    // unknown, so we keep Vita's estimate. A miss (no relevant product, or OFF
+    // down) also falls through to the estimate — the log is never blocked.
+    let calories = d.calories;
+    let protein = d.protein;
+    let carbs = d.carbs;
+    let fat = d.fat;
+    let source: "estimate" | "off" = "estimate";
+
+    const unit = d.servingUnit.trim().toLowerCase();
+    const grams = unit === "g" || unit === "ml" ? d.quantity * d.servingSize : null;
+    if (grams && grams > 0) {
+      const resolved = await resolveFoodNutrition(d.foodName, grams);
+      if (resolved) {
+        calories = resolved.calories;
+        protein = resolved.protein;
+        carbs = resolved.carbs;
+        fat = resolved.fat;
+        source = "off";
+      }
+    }
+
+    const facts = { foodName: d.foodName, calories, protein, carbs, fat };
     const proposal = {
       foodName: d.foodName,
       mealType: d.mealType,
       quantity: d.quantity,
       servingSize: d.servingSize,
       servingUnit: d.servingUnit,
-      calories: d.calories,
-      protein: d.protein,
-      carbs: d.carbs,
-      fat: d.fat,
-      // Everything the model proposes is an estimate. When Open Food Facts
-      // lookup lands, matched entries will set this to "off" instead.
-      source: "estimate" as const,
+      calories,
+      protein,
+      carbs,
+      fat,
+      source,
     };
     // Vita says the nutrition conversationally, then the card renders below with
-    // just the editable fields. Built from the validated values, so it matches.
-    const say = `${nutritionSummary(d)} Here's what I'll log — check the numbers and confirm, or tweak them first.`;
+    // just the editable fields. Built from the same (possibly OFF-sourced)
+    // values, so prose and card match.
+    const say = `${nutritionSummary(facts)} Here's what I'll log — check the numbers and confirm, or tweak them first.`;
     const sourceLabel = SOURCE_LABEL[proposal.source];
     // Persist the same words the bubble shows, including the source line, so
     // reopening the session reads identically (the confirm card is session-only).

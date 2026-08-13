@@ -5,6 +5,7 @@ import { getSession } from "@/lib/session";
 import { markDailyActivity, reevaluateLoggedFood } from "@/lib/daily-activity";
 import { addDays, dayInstant, dayStart, safeDayKey, todayKey } from "@/lib/day";
 import { foodLogSchema } from "@/lib/validations";
+import { OffError, searchFoods } from "@/lib/off";
 
 export type MealType = "BREAKFAST" | "LUNCH" | "DINNER" | "SNACK";
 
@@ -74,6 +75,60 @@ const toDTO = (r: {
   fat: r.fat,
   date: r.date.toISOString(),
 });
+
+// A search result from Open Food Facts, ready to auto-fill the log form. Macros
+// are per 100 g (the search index basis); the form seeds serving = 100 g and the
+// user adjusts quantity from there.
+export type FoodSearchResultDTO = {
+  code: string;
+  name: string;
+  brand: string | null;
+  calories: number; // per 100 g
+  protein: number;
+  carbs: number;
+  fat: number;
+};
+
+/**
+ * Search Open Food Facts by food name for the manual log form. Returns real,
+ * sourced products (calories/macros per 100 g). Empty query → no results; an OFF
+ * outage or rate-limit returns a friendly error so the user just types manually.
+ */
+export async function searchFoodProducts(
+  query: string,
+): Promise<ActionResult<FoodSearchResultDTO[]>> {
+  await requireUserId();
+
+  const q = query.trim();
+  if (q.length < 2) return { ok: true, data: [] };
+
+  try {
+    const products = await searchFoods(q, 8);
+    return {
+      ok: true,
+      data: products.map((p) => ({
+        code: p.code,
+        name: p.name,
+        brand: p.brand,
+        calories: p.per100g.calories,
+        protein: p.per100g.protein,
+        carbs: p.per100g.carbs,
+        fat: p.per100g.fat,
+      })),
+    };
+  } catch (err) {
+    if (err instanceof OffError && err.reason === "rate_limited") {
+      return {
+        ok: false,
+        error: "Food search is busy right now — try again shortly, or enter it manually.",
+      };
+    }
+    return {
+      ok: false,
+      error: "Couldn't reach the food database — enter the details manually.",
+    };
+  }
+}
 
 /**
  * Food logs for a given app-day (UTC+8, matching how DailyActivity buckets).

@@ -7,7 +7,15 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { Flame, Pencil, Salad, Trash2, UtensilsCrossed } from "lucide-react";
+import {
+  Flame,
+  Loader2,
+  Pencil,
+  Salad,
+  Search,
+  Trash2,
+  UtensilsCrossed,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { addDays } from "@/lib/day";
@@ -33,9 +41,11 @@ import {
   createFoodLog,
   deleteFoodLog,
   getFoodLogsForDay,
+  searchFoodProducts,
   updateFoodLog,
   type FoodLogDTO,
   type FoodLogInputRaw,
+  type FoodSearchResultDTO,
   type MealType,
 } from "./actions";
 
@@ -57,6 +67,7 @@ const segmentItem =
 const segmentItemActive = "bg-background text-foreground shadow-sm";
 
 const round = (n: number) => Math.round(n);
+const round1 = (n: number) => Math.round(n * 10) / 10;
 
 const emptyForm = {
   foodName: "",
@@ -251,6 +262,23 @@ export function NutritionClient({
     createMutation.mutate({ input: { mealType: meal, ...form }, day });
   }
 
+  // Picking an Open Food Facts result fills the form from real per-100g data:
+  // serving defaults to 100 g, quantity to 1. Everything stays editable before
+  // saving, so the user can adjust to what they actually ate.
+  function onPickFood(r: FoodSearchResultDTO) {
+    setForm({
+      foodName: r.name,
+      quantity: "1",
+      servingSize: "100",
+      servingUnit: "g",
+      calories: String(round(r.calories)),
+      protein: String(round1(r.protein)),
+      carbs: String(round1(r.carbs)),
+      fat: String(round1(r.fat)),
+    });
+    setError(null);
+  }
+
   function openEdit(f: FoodLogDTO) {
     setEditMeal(f.mealType);
     setEditForm(toForm(f));
@@ -315,6 +343,8 @@ export function NutritionClient({
           </CardHeader>
           <CardContent>
             <form onSubmit={onSubmit} className="flex flex-col gap-4">
+              <FoodSearch onPick={onPickFood} />
+
               <FoodFields
                 idPrefix="log"
                 meal={meal}
@@ -477,6 +507,142 @@ export function NutritionClient({
           </div>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+// Open Food Facts search box for the log form. Type a food name → real, sourced
+// products from OFF → pick one to auto-fill the fields below (per 100 g, still
+// editable). Manual entry is always available as the fallback: this just seeds
+// the form, it doesn't gate submission. Fetching happens server-side (Server
+// Action) so the User-Agent and caching stay controlled.
+function FoodSearch({ onPick }: { onPick: (r: FoodSearchResultDTO) => void }) {
+  const [query, setQuery] = React.useState("");
+  const [results, setResults] = React.useState<FoodSearchResultDTO[]>([]);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [open, setOpen] = React.useState(false);
+  // Guards against out-of-order responses: only the latest request wins.
+  const reqId = React.useRef(0);
+  const boxRef = React.useRef<HTMLDivElement>(null);
+
+  // Debounced search as the user types. All state updates live inside the timer
+  // callback (not the effect body) so the debounce is honored and there's no
+  // synchronous setState-in-effect. <2 chars clears immediately; a query runs
+  // after 350ms. `reqId` drops any response the user has already typed past.
+  React.useEffect(() => {
+    const q = query.trim();
+    const id = ++reqId.current;
+    const t = setTimeout(
+      async () => {
+        if (q.length < 2) {
+          setResults([]);
+          setLoading(false);
+          setError(null);
+          return;
+        }
+        setLoading(true);
+        const res = await searchFoodProducts(q);
+        if (id !== reqId.current) return; // a newer keystroke superseded this one
+        setLoading(false);
+        if (res.ok) {
+          setResults(res.data);
+          setError(null);
+        } else {
+          setResults([]);
+          setError(res.error);
+        }
+      },
+      q.length < 2 ? 0 : 350,
+    );
+    return () => clearTimeout(t);
+  }, [query]);
+
+  // Dismiss the dropdown when clicking outside the search box.
+  React.useEffect(() => {
+    function onDocDown(e: MouseEvent) {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocDown);
+    return () => document.removeEventListener("mousedown", onDocDown);
+  }, []);
+
+  function pick(r: FoodSearchResultDTO) {
+    onPick(r);
+    setQuery("");
+    setResults([]);
+    setError(null);
+    setOpen(false);
+  }
+
+  const q = query.trim();
+  const showDropdown = open && q.length >= 2;
+
+  return (
+    <div className="flex flex-col gap-2" ref={boxRef}>
+      <Label htmlFor="food-search">Search food database</Label>
+      <div className="relative">
+        <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
+          {loading ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Search className="size-4" />
+          )}
+        </span>
+        <Input
+          id="food-search"
+          type="search"
+          autoComplete="off"
+          placeholder="e.g. Nutella, Greek yogurt, banana"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setOpen(true)}
+          className="pl-9"
+        />
+
+        {showDropdown && (
+          <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-xl border border-border bg-popover shadow-lg">
+            <ul className="max-h-72 overflow-y-auto py-1">
+              {error ? (
+                <li className="px-3 py-2.5 text-sm text-destructive">{error}</li>
+              ) : results.length === 0 ? (
+                <li className="px-3 py-2.5 text-sm text-muted-foreground">
+                  {loading ? "Searching…" : "No matches — enter it manually below."}
+                </li>
+              ) : (
+                results.map((r) => (
+                  <li key={r.code}>
+                    <button
+                      type="button"
+                      onClick={() => pick(r)}
+                      className="flex w-full flex-col gap-0.5 px-3 py-2.5 text-left transition-colors hover:bg-secondary focus-visible:bg-secondary focus-visible:outline-none"
+                    >
+                      <span className="flex items-baseline justify-between gap-2">
+                        <span className="min-w-0 truncate text-sm font-medium text-foreground">
+                          {r.name}
+                        </span>
+                        <span className="shrink-0 text-xs font-medium tabular-nums text-foreground">
+                          {round(r.calories)} kcal
+                        </span>
+                      </span>
+                      <span className="truncate text-xs text-muted-foreground">
+                        {r.brand ? `${r.brand} · ` : ""}per 100 g · P
+                        {round(r.protein)} C{round(r.carbs)} F{round(r.fat)}
+                      </span>
+                    </button>
+                  </li>
+                ))
+              )}
+            </ul>
+            <p className="border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground">
+              Data from Open Food Facts. Picking fills the fields below — edit
+              before saving.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

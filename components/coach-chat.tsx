@@ -17,6 +17,7 @@ import type { LucideIcon } from "lucide-react";
 import type { CoachId } from "@/lib/ai/coaches";
 import { SOURCE_LABEL, type FoodSource } from "@/lib/food-summary";
 import { cn } from "@/lib/utils";
+import { CoachAvatar } from "@/components/coach-avatar";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -110,7 +111,6 @@ export function CoachChat({
   const [error, setError] = React.useState<string | null>(null);
 
   const ui = COACH_UI[coachId];
-  const CoachIcon = ui.icon;
 
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
@@ -208,9 +208,7 @@ export function CoachChat({
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-3 border-b border-border px-5 py-4">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-          <CoachIcon className="size-4.5" />
-        </span>
+        <CoachAvatar coach={coachId} className="size-9" />
         <div className="min-w-0 flex-1">
           <p className="font-display text-base font-semibold leading-tight tracking-tight">
             {coachName}
@@ -224,9 +222,7 @@ export function CoachChat({
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center text-center">
-            <span className="mb-3 flex size-12 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <CoachIcon className="size-6" />
-            </span>
+            <CoachAvatar coach={coachId} className="mb-3 size-12" />
             <p className="text-sm font-medium">Chat with {coachName}</p>
             <p className="mt-1 max-w-xs text-sm text-muted-foreground">
               {ui.intro}

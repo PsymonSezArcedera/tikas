@@ -226,3 +226,43 @@
     opacity: 0.06;
   }
 }
+
+/*
+ * Landing hero entrance — a one-shot fade + rise on load (above-the-fold, so it
+ * can't wait on a scroll observer). Below-the-fold sections use the JS Reveal
+ * component instead. Staggered via -1/-2/-3; disabled under reduced motion.
+ */
+@keyframes tikas-fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.fade-rise {
+  animation: tikas-fade-rise 0.7s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+.fade-rise-1 {
+  animation-delay: 0.08s;
+}
+.fade-rise-2 {
+  animation-delay: 0.16s;
+}
+.fade-rise-3 {
+  animation-delay: 0.24s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .fade-rise {
+    animation: none;
+  }
+}
+
+/* Smooth in-page anchor scrolling (footer nav), skipped under reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
